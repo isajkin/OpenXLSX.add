@@ -1,4 +1,6 @@
 #include "myopenxlsx.h"
+//using namespace std::literals::string_literals;
+using namespace std::string_literals;
 int main()
 {
 	XLDocument1 doc;
@@ -125,7 +127,24 @@ int main()
 	for(int32_t i=0;i<4;i++)r.borders(i).setLineStyle(1);
 	wks.cell("D7").value() = r.address();
 	wks.merge("B7:C8");
-	//	r->setHorizontalAlignment("center");
+/*
+	c = wks.cell("E7");
+	c.value() = "123456789";
+	auto ch=c.characters(3, 4);
+	ch.font().setBold(true);
+*/
+	c = wks.cell("E7");
+	c.value() = "Privet";
+	auto ch = c.characters(2, 2);
+	ch.font().setItalic(true);
+	ch.font().setBold(true);
+
+	c = wks.cell("G7");
+	c.value() = "fontname";
+	ch = c.characters(5, 4);
+	ch.font().setUnderline(2);
+	ch.font().setSize(20);
+	ch.font().setColor("0000FF");
 
 	doc.save();
 	doc.close();

@@ -1,8 +1,14 @@
 #include "myopenxlsx.h"
 #include <pugixml.hpp>
 #include <XLUtilities.hpp>
+#include "utf8.h"
 
 const std::string ShapeNodeNameDr = "xdr:twoCellAnchor";
+
+int utf8next(utf8_int8_t* str);
+utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen);
+std::string xlrtf(std::string s, int32_t start, int32_t len, std::string rtf);
+
 
 static XLNUMBERFORMATSTRUCTEMBED numberformatem[] =
 {
@@ -360,14 +366,16 @@ XLDocument1::XLDocument1()
 	m_begin = 0;
 	m_numberformat = NULL;
 	m_numberformatcount = 0;
-	borders = NULL;
-	bordercount = 0;
+	m_borders = NULL;
+	m_bordercount = 0;
 	m_fonts = NULL;
 	m_fontcount = 0;
 	m_fills = NULL;
 	m_fillcount = 0;
-	cellformat = NULL;
+	m_cellformat = NULL;
 	m_cellformatcount = 0;
+	m_characters = NULL;
+	m_charactercount = 0;
 
 };
 XLDocument1::~XLDocument1()
@@ -384,10 +392,10 @@ void XLDocument1::getallstyles()
 	XLCellFormats& cellformats = m_doc->styles().cellFormats();
 	m_cellformatcount = cellformats.count();
 	if (m_cellformatcount) {
-		cellformat = (XLCELLFORMATSTRUCT*)calloc(1, m_cellformatcount * sizeof(XLCELLFORMATSTRUCT));
+		m_cellformat = (XLCELLFORMATSTRUCT*)calloc(1, m_cellformatcount * sizeof(XLCELLFORMATSTRUCT));
 		for (i = 0; i < m_cellformatcount; i++) {
 			XLCellFormat cf = cellformats[i];
-			XLCELLFORMATSTRUCT* c = cellformat + i;
+			XLCELLFORMATSTRUCT* c = m_cellformat + i;
 			c->numberformatid = cf.numberFormatId();
 			c->fontindex = cf.fontIndex();
 			c->fillindex = cf.fillIndex();
@@ -421,13 +429,13 @@ void XLDocument1::getallstyles()
 		} 
 	}
 	XLBorders& bs = m_doc->styles().borders();
-	bordercount = bs.count();
-	if (bordercount) {
-		borders= (XLBORDERSTRUCT*)calloc(1, bordercount * sizeof(XLBORDERSTRUCT));
-		if (borders) {
-			for (i = 0; i < bordercount; i++) {
+	m_bordercount = bs.count();
+	if (m_bordercount) {
+		m_borders= (XLBORDERSTRUCT*)calloc(1, m_bordercount * sizeof(XLBORDERSTRUCT));
+		if (m_borders) {
+			for (i = 0; i < m_bordercount; i++) {
 				XLBorder b = bs[i];
-				XLBORDERSTRUCT* border = borders + i;
+				XLBORDERSTRUCT* border = m_borders + i;
 				border->bottom.style = b.bottom().style();
 				border->left.style = b.left().style();
 				border->right.style = b.bottom().style();
@@ -437,7 +445,6 @@ void XLDocument1::getallstyles()
 				border->diagonal.style = b.diagonal().style();
 				border->diagonaldown = b.diagonalDown();
 				border->diagonalup = b.diagonalUp();
-
 
 			}
 		}
@@ -492,11 +499,11 @@ void XLDocument1::setallstyles()
 			}
 		}
 		XLBorders bs = m_doc->styles().borders();
-		while (bs.count() < (size_t)bordercount) {
+		while (bs.count() < (size_t)m_bordercount) {
 			bs.create();
 		}
-		for (i = 1; i < bordercount; i++) {
-			XLBORDERSTRUCT* border = borders + i;
+		for (i = 1; i < m_bordercount; i++) {
+			XLBORDERSTRUCT* border = m_borders + i;
 			if (border->unsave) {
 				XLBorder b = bs.borderByIndex(i);
 				if(border->bottom.style)b.setBottom((XLLineStyle)border->bottom.style, (XLColor)"00000000", 0);
@@ -514,36 +521,36 @@ void XLDocument1::setallstyles()
 		XLFonts& fnts = m_doc->styles().fonts();
 		while (fnts.count() < (size_t)m_fontcount)fnts.create();
 		for (i = 1; i < m_fontcount; i++) {
-			XLFONTSTRUCT f = m_fonts[i]; XLFont fs = fnts[i];
-			if (f.unsave) {
-				if (f.bold)fs.setBold(f.bold);
-				if (f.italic)fs.setItalic(f.italic);
-				if (f.name[0])fs.setFontName(f.name);
-				if (f.size)fs.setFontSize(f.size);
-				if (f.charset)fs.setFontCharset(f.charset);
-				if (f.family)fs.setFontFamily(f.family);
+			XLFONTSTRUCT *f = m_fonts+i; XLFont fs = fnts[i];
+			if (f->unsave) {
+				if (f->bold)fs.setBold(f->bold);
+				if (f->italic)fs.setItalic(f->italic);
+				if (f->name[0])fs.setFontName(f->name);
+				if (f->size)fs.setFontSize(f->size);
+				if (f->charset)fs.setFontCharset(f->charset);
+				if (f->family)fs.setFontFamily(f->family);
 
-				if (f.i.rgb) {
-					XLColor c(f.i.color.alpha, f.i.color.red, f.i.color.green, f.i.color.blue);
+				if (f->i.rgb) {
+					XLColor c(f->i.color.alpha, f->i.color.red, f->i.color.green, f->i.color.blue);
 					fs.setFontColor(c);
 				}
-				if (f.condense)fs.setCondense(f.condense);
-				if (f.extend)fs.setExtend(f.extend);
-				if (f.outline)fs.setOutline(f.outline);
-				if (f.shadow)fs.setShadow(f.shadow);
-				if (f.strikethrough)fs.setStrikethrough(f.strikethrough);
-				if (f.underline)fs.setUnderline((XLUnderlineStyle)f.underline);
-				if (f.scheme)fs.setScheme((XLFontSchemeStyle)f.scheme);
-				if (f.vertalign)fs.setVertAlign((XLVerticalAlignRunStyle)f.vertalign);
+				if (f->condense)fs.setCondense(f->condense);
+				if (f->extend)fs.setExtend(f->extend);
+				if (f->outline)fs.setOutline(f->outline);
+				if (f->shadow)fs.setShadow(f->shadow);
+				if (f->strikethrough)fs.setStrikethrough(f->strikethrough);
+				if (f->underline)fs.setUnderline((XLUnderlineStyle)f->underline);
+				if (f->scheme)fs.setScheme((XLFontSchemeStyle)f->scheme);
+				if (f->vertalign)fs.setVertAlign((XLVerticalAlignRunStyle)f->vertalign);
 
-				f.unsave = 0;
+				f->unsave = 0;
 			}
 		}
 		XLCellFormats cf = m_doc->styles().cellFormats();
 		while (cf.count() < (size_t)m_cellformatcount)cf.create();
-		for (i =1; i < m_cellformatcount; i++){
+		for (i = 1; i < m_cellformatcount; i++) {
 			XLCellFormat c = cf[i];
-			XLCELLFORMATSTRUCT *ce = cellformat+i;
+			XLCELLFORMATSTRUCT* ce = m_cellformat + i;
 			if (ce->unsave) {
 				c.setNumberFormatId(ce->numberformatid);
 				if (c.numberFormatId())c.setApplyNumberFormat(true);
@@ -552,12 +559,12 @@ void XLDocument1::setallstyles()
 				if (c.fontIndex())c.setApplyFont(true);
 
 				c.setFillIndex(ce->fillindex);
-				if(c.fillIndex())c.setApplyFill(true);
+				if (c.fillIndex())c.setApplyFill(true);
 
 				c.setBorderIndex(ce->borderindex);
 				if (c.borderIndex())c.setApplyBorder(true);
 
-				XLALIGNSTRUCT *a = &ce->alignment;
+				XLALIGNSTRUCT* a = &ce->alignment;
 				bool flag = false;
 				if (a->horizontal) {
 					flag = true; c.alignment(XLCreateIfMissing).setHorizontal((XLAlignmentStyle)a->horizontal);
@@ -589,6 +596,53 @@ void XLDocument1::setallstyles()
 				ce->unsave = 0;
 			}
 		}
+		for (i = 0; i < m_charactercount; i++) {
+			XLCHARACTERSTRUCT* cs = m_characters+i;
+			int indexf = cs->indexf;
+			XLCELLFORMATSTRUCT* cf = m_cellformat + indexf;
+			indexf=cf->fontindex;
+			XLFONTSTRUCT *f = m_fonts+indexf;
+
+			std::string rtf = "";
+			if (f->bold)rtf = rtf + "<b/>";
+			if (f->italic)rtf = rtf + "<i/>";
+			if (f->underline) {
+				if (f->underline == 1) {
+					rtf = rtf + "<u/>";
+				}
+				else {
+					if (f->underline == 2) {
+						rtf=rtf+"<u val=\"double\"/>";
+					}
+				}
+			}
+			if (f->strikethrough)rtf = rtf + "<strike/>";
+			if (f->vertalign == 1)rtf = rtf + "<vertAlign val=\"subscript\"/>";
+			if (f->vertalign == 2)rtf = rtf + "<vertAlign val=\"superscript\"/>";
+			if (f->i.rgb) {
+				XLColor color(f->i.color.alpha, f->i.color.red, f->i.color.green, f->i.color.blue);
+				color.hex();
+				rtf = rtf + "<color rgb=\"" + color.hex() + "\"/>";
+			}
+			if (f->size) {
+				char buf[32];
+				char *s=_itoa(f->size, buf, 10);
+				rtf = rtf + "<sz val=\""+std::string(s)+"\"/>";
+			}
+			if (f->charset) {
+				char buf[32];
+				itoa(f->charset, buf, 10);
+				rtf = rtf + "<charset val=\"" + std::string(buf) + "\"/>";
+			}
+			if(f->name[0])rtf = rtf+"<rFont val=\""+std::string(f->name)+"\"/>";
+
+			if (rtf.length()) {
+				XLCell cell = m_doc->workbook().worksheet(cs->sheetno).cell(cs->row, cs->col);
+				std::string v = cell.value().getString();
+				v = xlrtf(v, cs->start, cs->len, rtf);
+				cell.value() = v;
+			}
+		}
 	}
 	if (m_numberformat) {
 		free(m_numberformat);
@@ -596,10 +650,10 @@ void XLDocument1::setallstyles()
 		m_numberformatcount = 0;
 	}
 
-	if (borders) {
-		free(borders);
-		borders = NULL;
-		bordercount = 0;
+	if (m_borders) {
+		free(m_borders);
+		m_borders = NULL;
+		m_bordercount = 0;
 	}
 
 	if (m_fonts) {
@@ -614,11 +668,18 @@ void XLDocument1::setallstyles()
 		m_fillcount = 0;
 	}
 
-	if (cellformat) {
-		free(cellformat);
-		cellformat = NULL;
+	if (m_cellformat) {
+		free(m_cellformat);
+		m_cellformat = NULL;
 		m_cellformatcount = 0;
 	}
+
+	if (m_characters) {
+		free(m_characters);
+		m_characters = NULL;
+		m_charactercount = 0;
+	}
+
 	m_begin=0;
 }
 
@@ -626,9 +687,9 @@ bool XLDocument1::getboolstyle(int32_t index, int32_t type,int32_t prop)
 {
 	if (index < 0 or index >= m_cellformatcount)return false;
 	switch (type) {
-	case MY_XLCELLFORMAT_NUMBERFORMATID :index = cellformat[index].numberformatid; break;
+	case MY_XLCELLFORMAT_NUMBERFORMATID :index = m_cellformat[index].numberformatid; break;
 	case MY_XLCELLFORMAT_ALIGNMENT: {
-		XLALIGNSTRUCT al = cellformat[index].alignment;
+		XLALIGNSTRUCT al = m_cellformat[index].alignment;
 		switch (prop) {
 		case MY_ALIGN_SHRINKTOFIT:return al.shrinktofit;
 		case MY_ALIGN_WRAPTEXT:return al.wraptext;
@@ -636,7 +697,7 @@ bool XLDocument1::getboolstyle(int32_t index, int32_t type,int32_t prop)
 		return 0;
 	}
 	case MY_XLCELLFORMAT_FONTINDEX: {
-		int indexf = cellformat[index].fontindex;
+		int indexf = m_cellformat[index].fontindex;
 		XLFONTSTRUCT f = m_fonts[indexf];
 		switch (prop) {
 			case MY_XLFONT_BOLD:return f.bold;
@@ -651,10 +712,10 @@ bool XLDocument1::getboolstyle(int32_t index, int32_t type,int32_t prop)
 	}
 	case MY_XLCELLFORMAT_FILLINDEX:break;
 	case MY_XLCELLFORMAT_BORDERINDEX: {
-		int indexf = cellformat[index].borderindex;
+		int indexf = m_cellformat[index].borderindex;
 		switch (prop) {
-		case MY_BORDER_DIAGONALDOWN:return borders[index].diagonaldown;
-		case MY_BORDER_DIAGONALUP:return borders[index].diagonalup;
+		case MY_BORDER_DIAGONALDOWN:return m_borders[index].diagonaldown;
+		case MY_BORDER_DIAGONALUP:return m_borders[index].diagonalup;
 		default: return false;
 		}
 	}
@@ -671,7 +732,7 @@ int32_t XLDocument1::getintstyle(int32_t index, int32_t type, int32_t prop)
 	switch (type) {
 	case MY_XLCELLFORMAT_NUMBERFORMATID: {
 		int indexf;
-		indexf = cellformat[index].numberformatid;
+		indexf = m_cellformat[index].numberformatid;
 		switch (prop) {
 		case MY_NUMBERFORMAT_ID:
 			return indexf;
@@ -679,7 +740,7 @@ int32_t XLDocument1::getintstyle(int32_t index, int32_t type, int32_t prop)
 		}
 	}
 	case MY_XLCELLFORMAT_FONTINDEX: {
-		int indexf = cellformat[index].fontindex;
+		int indexf = m_cellformat[index].fontindex;
 		XLFONTSTRUCT* f = m_fonts+indexf;
 		switch (prop) {
 		case MY_XLFONT_CHARSET:return f->charset;
@@ -694,7 +755,7 @@ int32_t XLDocument1::getintstyle(int32_t index, int32_t type, int32_t prop)
 	}
 	case MY_XLCELLFORMAT_FILLINDEX:break;
 	case MY_XLCELLFORMAT_ALIGNMENT: {
-		XLALIGNSTRUCT al = cellformat[index].alignment;
+		XLALIGNSTRUCT al = m_cellformat[index].alignment;
 		switch (prop) {
 		case MY_ALIGN_HORIZONTAL:return al.horizontal;
 		case MY_ALIGN_VERTICAL:return al.vertical;
@@ -707,15 +768,15 @@ int32_t XLDocument1::getintstyle(int32_t index, int32_t type, int32_t prop)
 		return 0;
 	}
 	case MY_XLCELLFORMAT_BORDERINDEX: {
-		int indexf = cellformat[index].borderindex;
+		int indexf = m_cellformat[index].borderindex;
 		switch (prop) {
-			case MY_BORDER_BOTTOM:return borders[indexf].bottom.style;
-			case MY_BORDER_LEFT:return borders[indexf].left.style;
-			case MY_BORDER_RIGHT:return borders[indexf].right.style;
-			case MY_BORDER_TOP:return borders[indexf].top.style;
-			case MY_BORDER_HORIZONTAL:return borders[indexf].horizontal.style;
-			case MY_BORDER_VERTICAL:return borders[indexf].vertical.style;
-			case MY_BORDER_DIAGONAL:return borders[indexf].diagonal.style;
+			case MY_BORDER_BOTTOM:return m_borders[indexf].bottom.style;
+			case MY_BORDER_LEFT:return m_borders[indexf].left.style;
+			case MY_BORDER_RIGHT:return m_borders[indexf].right.style;
+			case MY_BORDER_TOP:return m_borders[indexf].top.style;
+			case MY_BORDER_HORIZONTAL:return m_borders[indexf].horizontal.style;
+			case MY_BORDER_VERTICAL:return m_borders[indexf].vertical.style;
+			case MY_BORDER_DIAGONAL:return m_borders[indexf].diagonal.style;
 			default:return 0;
 		}
 	}
@@ -738,7 +799,7 @@ char * XLDocument1::getcharstyle(int32_t index, int32_t type, int32_t prop)
 	if (index < 0 or index >= m_cellformatcount)return (char *)"";
 	switch (type) {
 	case MY_XLCELLFORMAT_NUMBERFORMATID: {
-		int indexf = cellformat[index].numberformatid; char* ret;
+		int indexf = m_cellformat[index].numberformatid; char* ret;
 		switch (prop) {
 		case MY_NUMBERFORMAT_CODE:
 			ret = findnumberformatem(indexf);
@@ -750,7 +811,7 @@ char * XLDocument1::getcharstyle(int32_t index, int32_t type, int32_t prop)
 		break;
 	}
 	case MY_XLCELLFORMAT_FONTINDEX: {
-		int indexf = cellformat[index].fontindex;
+		int indexf = m_cellformat[index].fontindex;
 		XLFONTSTRUCT* f = m_fonts + indexf;
 		switch (prop) {
 		case MY_XLFONT_NAME:return f->name;
@@ -812,7 +873,7 @@ int32_t XLDocument1::findfont(void* p)
 
 int32_t XLDocument1::createfont(void *p) {
 	m_fonts = (XLFONTSTRUCT *)realloc((void*)m_fonts, sizeof(XLFONTSTRUCT) * (m_fontcount + 1));
-	if (m_fontcount) {
+	if (m_fonts && m_fontcount) {
 		memcpy((void*)&m_fonts[m_fontcount], p, sizeof(XLFONTSTRUCT));
 		m_fonts[m_fontcount].unsave = 1;
 		m_fontcount++;
@@ -821,22 +882,41 @@ int32_t XLDocument1::createfont(void *p) {
 	return 0;
 }
 
+int32_t XLDocument1::findcharacter(void* p)
+{
+	int i;
+	for (i = 0; i < m_charactercount; i++) {
+		if (!memcmp((void*)&m_characters[i], (void*)p, sizeof(XLCHARACTERSTRUCT)-sizeof(int32_t)))return i;
+	}
+	return -1;
+}
+
+int32_t XLDocument1::createcharacter(void* p) {
+	m_characters = (XLCHARACTERSTRUCT*)realloc((void*)m_characters, sizeof(XLCHARACTERSTRUCT) * (m_charactercount + 1));
+	if (m_characters) {
+		memcpy((void*)&m_characters[m_charactercount], p, sizeof(XLCHARACTERSTRUCT));
+		m_charactercount++;
+		return m_charactercount - 1;
+	}
+	return -1;
+}
+
 int32_t XLDocument1::findborder(void* p)
 {
 	int i;
-	for (i = 0; i < bordercount; i++) {
-		if (!memcmp((void*)&borders[i], (void*)p, sizeof(XLBORDERSTRUCT)))return i;
+	for (i = 0; i < m_bordercount; i++) {
+		if (!memcmp((void*)&m_borders[i], (void*)p, sizeof(XLBORDERSTRUCT)))return i;
 	}
 	return -1;
 }
 
 int32_t XLDocument1::createborder(void* p) {
-	borders = (XLBORDERSTRUCT*)realloc((void*)borders, sizeof(XLBORDERSTRUCT) * (bordercount + 1));
-	if (bordercount) {
-		memcpy((void*)&borders[bordercount], p, sizeof(XLBORDERSTRUCT));
-		borders[bordercount].unsave = 1;
-		bordercount++;
-		return bordercount - 1;
+	m_borders = (XLBORDERSTRUCT*)realloc((void*)m_borders, sizeof(XLBORDERSTRUCT) * (m_bordercount + 1));
+	if (m_borders) {
+		memcpy((void*)&m_borders[m_bordercount], p, sizeof(XLBORDERSTRUCT));
+		m_borders[m_bordercount].unsave = 1;
+		m_bordercount++;
+		return m_bordercount - 1;
 	}
 	return 0;
 }
@@ -845,7 +925,7 @@ int32_t XLDocument1::findcellformat(XLCELLFORMATSTRUCT *p)
 {
 	int i;
 	for (i = 0; i < m_cellformatcount; i++) {
-		if (!memcmp((void*)&cellformat[i], (void*)p, sizeof(XLCELLFORMATSTRUCT)))return i;
+		if (!memcmp((void*)&m_cellformat[i], (void*)p, sizeof(XLCELLFORMATSTRUCT)))return i;
 	}
 	return -1;
 }
@@ -855,21 +935,21 @@ int32_t XLDocument1::countcellformat(int32_t type,int32_t n)
 	int i; int count = 0;
 	for (i = 0; i < m_cellformatcount; i++) {
 		switch (type) {
-		case MY_XLCELLFORMAT_NUMBERFORMATID:if (cellformat[i].numberformatid == n)count++; break;
-		case MY_XLCELLFORMAT_FONTINDEX:if (cellformat[i].fontindex == n)count++; break;
-		case MY_XLCELLFORMAT_FILLINDEX:if (cellformat[i].fillindex == n)count++; break;
-		case MY_XLCELLFORMAT_BORDERINDEX:if (cellformat[i].borderindex == n)count++; break;
-		case MY_XLCELLFORMAT_XFID:if (cellformat[i].xfid == n)count++; break;
+		case MY_XLCELLFORMAT_NUMBERFORMATID:if (m_cellformat[i].numberformatid == n)count++; break;
+		case MY_XLCELLFORMAT_FONTINDEX:if (m_cellformat[i].fontindex == n)count++; break;
+		case MY_XLCELLFORMAT_FILLINDEX:if (m_cellformat[i].fillindex == n)count++; break;
+		case MY_XLCELLFORMAT_BORDERINDEX:if (m_cellformat[i].borderindex == n)count++; break;
+		case MY_XLCELLFORMAT_XFID:if (m_cellformat[i].xfid == n)count++; break;
 		}
 	}
 	return count;
 }
 
 int32_t XLDocument1::createcellformat(void* p) {
-	cellformat = (XLCELLFORMATSTRUCT*)realloc((void*)cellformat, sizeof(XLCELLFORMATSTRUCT) * (m_cellformatcount + 1));
+	m_cellformat = (XLCELLFORMATSTRUCT*)realloc((void*)m_cellformat, sizeof(XLCELLFORMATSTRUCT) * (m_cellformatcount + 1));
 	if (m_cellformatcount) {
-		memcpy((void*)&cellformat[m_cellformatcount], p, sizeof(XLCELLFORMATSTRUCT));
-		cellformat[m_cellformatcount].unsave = 1;
+		memcpy((void*)&m_cellformat[m_cellformatcount], p, sizeof(XLCELLFORMATSTRUCT));
+		m_cellformat[m_cellformatcount].unsave = 1;
 		m_cellformatcount++;
 		return m_cellformatcount - 1;
 	}
@@ -883,10 +963,10 @@ int32_t XLDocument1::setboolstyle(int32_t index, int32_t type, int32_t prop, boo
 		case MY_XLCELLFORMAT_ALIGNMENT: {
 			XLCELLFORMATSTRUCT pp; XLALIGNSTRUCT* al;
 			if (!index) {
-				memcpy((void*)&pp, &cellformat[index], sizeof(XLCELLFORMATSTRUCT));
+				memcpy((void*)&pp, &m_cellformat[index], sizeof(XLCELLFORMATSTRUCT));
 				index = createcellformat((void*)&pp);
 			}
-			al = &cellformat[index].alignment;
+			al = &m_cellformat[index].alignment;
 			switch (prop) {
 				case MY_ALIGN_SHRINKTOFIT:al->shrinktofit = value; break;
 				case MY_ALIGN_WRAPTEXT:al->wraptext = value; break;
@@ -897,7 +977,7 @@ int32_t XLDocument1::setboolstyle(int32_t index, int32_t type, int32_t prop, boo
 		case MY_XLCELLFORMAT_FONTINDEX: {
 			XLFONTSTRUCT p; XLCELLFORMATSTRUCT pp; int indexf; int c;
 			if (m_cellformatcount)
-				indexf = cellformat[index].fontindex;
+				indexf = m_cellformat[index].fontindex;
 			else
 				indexf = 0;
 			if (indexf && indexf < m_fontcount)
@@ -923,13 +1003,13 @@ int32_t XLDocument1::setboolstyle(int32_t index, int32_t type, int32_t prop, boo
 			if (c > 1) {//если несколько ячеек используют один индекс фонта, 
 				//или нулевой индекс на ячейке (первые записи в словарях не трогаем!!!),
 				// создаем новый индекс
-				memcpy((void *)&pp,&cellformat[index],sizeof(XLCELLFORMATSTRUCT));
+				memcpy((void *)&pp,&m_cellformat[index],sizeof(XLCELLFORMATSTRUCT));
 				pp.fontindex = indexf;
 				index = createcellformat((void*)&pp);
 			}
 			else {//иначе просто меняем индекс фонта на текущей ячейке
-				cellformat[index].fontindex = indexf;
-				cellformat[index].unsave = 1;
+				m_cellformat[index].fontindex = indexf;
+				m_cellformat[index].unsave = 1;
 			}
 			m_save=1;
 			return index;
@@ -937,11 +1017,11 @@ int32_t XLDocument1::setboolstyle(int32_t index, int32_t type, int32_t prop, boo
 		case MY_XLCELLFORMAT_BORDERINDEX:{
 			XLBORDERSTRUCT p; XLCELLFORMATSTRUCT pp; int indexf; int c;
 			if (m_cellformatcount)
-				indexf = cellformat[index].borderindex;
+				indexf = m_cellformat[index].borderindex;
 			else
 				indexf = 0;
-			if (indexf && indexf < bordercount)
-				memcpy((void*)&p, (void*)&borders[indexf], sizeof(XLBORDERSTRUCT));
+			if (indexf && indexf < m_bordercount)
+				memcpy((void*)&p, (void*)&m_borders[indexf], sizeof(XLBORDERSTRUCT));
 			else
 				memset((void*)&p, 0, sizeof(XLBORDERSTRUCT));
 			switch (prop) {
@@ -958,13 +1038,13 @@ int32_t XLDocument1::setboolstyle(int32_t index, int32_t type, int32_t prop, boo
 			if (c > 1) {//если несколько ячеек используют один индекс фонта, 
 				//или нулевой индекс на ячейке (первые записи в словарях не трогаем!!!),
 				// создаем новый индекс
-				memcpy((void*)&pp, &cellformat[index], sizeof(XLCELLFORMATSTRUCT));
+				memcpy((void*)&pp, &m_cellformat[index], sizeof(XLCELLFORMATSTRUCT));
 				pp.borderindex = indexf;
 				index = createcellformat((void*)&pp);
 			}
 			else {//иначе просто меняем индекс фонта на текущей ячейке
-				cellformat[index].borderindex = indexf;
-				cellformat[index].unsave = 1;
+				m_cellformat[index].borderindex = indexf;
+				m_cellformat[index].unsave = 1;
 			}
 			m_save = 1;
 			return index;
@@ -981,7 +1061,7 @@ int32_t XLDocument1::setintstyle(int32_t index, int32_t type, int32_t prop, int 
 	case MY_XLCELLFORMAT_NUMBERFORMATID: {
 		XLCELLFORMATSTRUCT pp; int indexf; int c;
 		if (m_cellformatcount)
-			indexf = cellformat[index].numberformatid;
+			indexf = m_cellformat[index].numberformatid;
 		else
 			indexf = 0;
 		if (index)
@@ -989,13 +1069,13 @@ int32_t XLDocument1::setintstyle(int32_t index, int32_t type, int32_t prop, int 
 		else
 			c = 2;
 		if (c > 1) {
-			memcpy((void*)&pp, &cellformat[index], sizeof(XLCELLFORMATSTRUCT));
+			memcpy((void*)&pp, &m_cellformat[index], sizeof(XLCELLFORMATSTRUCT));
 			pp.numberformatid = value;
 			index = createcellformat((void*)&pp);
 		}
 		else {
-			cellformat[index].numberformatid = value;
-			cellformat[index].unsave = 1;
+			m_cellformat[index].numberformatid = value;
+			m_cellformat[index].unsave = 1;
 		}
 		m_save=1;
 		return index;
@@ -1003,7 +1083,7 @@ int32_t XLDocument1::setintstyle(int32_t index, int32_t type, int32_t prop, int 
 	case MY_XLCELLFORMAT_FONTINDEX: {
 		XLFONTSTRUCT p; XLCELLFORMATSTRUCT pp; int indexf; int c;
 		if (m_cellformatcount)
-			indexf = cellformat[index].fontindex;
+			indexf = m_cellformat[index].fontindex;
 		else
 			indexf = 0;
 		if (indexf>0 && indexf < m_fontcount)
@@ -1027,13 +1107,13 @@ int32_t XLDocument1::setintstyle(int32_t index, int32_t type, int32_t prop, int 
 		indexf = findfont((void*)&p);
 		if (indexf < 0)indexf = createfont((void*)&p);
 		if (c > 1) {
-			memcpy((void*)&pp, &cellformat[index], sizeof(XLCELLFORMATSTRUCT));
+			memcpy((void*)&pp, &m_cellformat[index], sizeof(XLCELLFORMATSTRUCT));
 			pp.fontindex = indexf;
 			index = createcellformat((void*)&pp);
 		}
 		else {
-			cellformat[index].fontindex = indexf;
-			cellformat[index].unsave = 1;
+			m_cellformat[index].fontindex = indexf;
+			m_cellformat[index].unsave = 1;
 		}
 		m_save=1;
 		return index;
@@ -1041,10 +1121,10 @@ int32_t XLDocument1::setintstyle(int32_t index, int32_t type, int32_t prop, int 
 	case MY_XLCELLFORMAT_ALIGNMENT: {
 		XLCELLFORMATSTRUCT pp; XLALIGNSTRUCT *al;
 		if (!index) {
-			memcpy((void*)&pp, &cellformat[index], sizeof(XLCELLFORMATSTRUCT));
+			memcpy((void*)&pp, &m_cellformat[index], sizeof(XLCELLFORMATSTRUCT));
 			index = createcellformat((void*)&pp);
 		}
-		al = &cellformat[index].alignment;
+		al = &m_cellformat[index].alignment;
 		switch (prop) {
 		case MY_ALIGN_HORIZONTAL:al->horizontal = value; break;
 		case MY_ALIGN_VERTICAL:al->vertical = value; break;
@@ -1060,11 +1140,11 @@ int32_t XLDocument1::setintstyle(int32_t index, int32_t type, int32_t prop, int 
 	case MY_XLCELLFORMAT_BORDERINDEX: {
 		XLBORDERSTRUCT p; XLCELLFORMATSTRUCT pp; int indexf; int c;
 		if (m_cellformatcount)
-			indexf = cellformat[index].borderindex;
+			indexf = m_cellformat[index].borderindex;
 		else
 			indexf = 0;
-		if (indexf>0 && indexf < bordercount)
-			memcpy((void*)&p, (void*)&borders[indexf], sizeof(XLBORDERSTRUCT));
+		if (indexf>0 && indexf < m_bordercount)
+			memcpy((void*)&p, (void*)&m_borders[indexf], sizeof(XLBORDERSTRUCT));
 		else
 			memset((void*)&p, 0, sizeof(XLBORDERSTRUCT));
 		switch (prop) {
@@ -1085,13 +1165,13 @@ int32_t XLDocument1::setintstyle(int32_t index, int32_t type, int32_t prop, int 
 		indexf = findborder((void*)&p);
 		if (indexf < 0)indexf = createborder((void*)&p);
 		if (c > 1) {
-			memcpy((void*)&pp, &cellformat[index], sizeof(XLCELLFORMATSTRUCT));
+			memcpy((void*)&pp, &m_cellformat[index], sizeof(XLCELLFORMATSTRUCT));
 			pp.borderindex = indexf;
 			index = createcellformat((void*)&pp);
 		}
 		else {
-			cellformat[index].borderindex = indexf;
-			cellformat[index].unsave = 1;
+			m_cellformat[index].borderindex = indexf;
+			m_cellformat[index].unsave = 1;
 		}
 		m_save = 1;
 		return index;
@@ -1131,7 +1211,7 @@ int32_t XLDocument1::setcharstyle(int32_t index, int32_t type, int32_t prop, std
 	case MY_XLCELLFORMAT_FONTINDEX: {
 		XLFONTSTRUCT p; XLCELLFORMATSTRUCT pp; int indexf; int c;
 		if (m_cellformatcount)
-			indexf = cellformat[index].fontindex;
+			indexf = m_cellformat[index].fontindex;
 		else
 			indexf = 0;
 		if (indexf && indexf < m_fontcount)
@@ -1145,6 +1225,16 @@ int32_t XLDocument1::setcharstyle(int32_t index, int32_t type, int32_t prop, std
 				if (len < sizeof(p.name) - 1)strcpy(p.name, value.data());
 			}
 			break;
+		case MY_XLFONT_COLOR: {
+			if (value.length()) {
+				XLColor c(value);
+				p.i.color.alpha = c.alpha();
+				p.i.color.red = c.red();
+				p.i.color.green = c.green();
+				p.i.color.blue = c.blue();
+			}
+			break;
+		}
 		}
 		default:break;
 		}
@@ -1155,13 +1245,13 @@ int32_t XLDocument1::setcharstyle(int32_t index, int32_t type, int32_t prop, std
 		indexf = findfont((void*)&p);
 		if (indexf < 0)indexf = createfont((void*)&p);
 		if (c > 1) {
-			memcpy((void*)&pp, &cellformat[index], sizeof(XLCELLFORMATSTRUCT));
+			memcpy((void*)&pp, &m_cellformat[index], sizeof(XLCELLFORMATSTRUCT));
 			pp.fontindex = indexf;
 			index = createcellformat((void*)&pp);
 		}
 		else {
-			cellformat[index].fontindex = indexf;
-			cellformat[index].unsave = 1;
+			m_cellformat[index].fontindex = indexf;
+			m_cellformat[index].unsave = 1;
 		}
 		m_save=1;
 		return index;
@@ -1268,24 +1358,14 @@ XLWorksheet1::XLWorksheet1(XLDocument1* doc1, XLWorksheet ws)
 #endif
 }
 
-XLWorksheet XLWorksheet1::ws()
-{
-	return m_ws;
-}
-
-int16_t XLWorksheet1::index() const
-{
-	return m_index;
-}
-
 XLCell1 XLWorksheet1::cell(const std::string &address)
 {
-	return XLCell1(m_doc1,m_ws.cell(address));
+	return XLCell1(m_doc1,*this,m_ws.cell(address));
 }
 
 XLCell1 XLWorksheet1::cell(int32_t row,int16_t column)
 {
-	return XLCell1(m_doc1,m_ws.cell(row,column));
+	return XLCell1(m_doc1,*this,m_ws.cell(row,column));
 }
 
 XLCellRange1 XLWorksheet1::range(const std::string& address)
@@ -1354,9 +1434,10 @@ XLDrawing1& XLWorksheet1::drawing()
 //-------------------class XLCell1---------------------------------------------------------
 
 XLCell1::XLCell1() {}
-XLCell1::XLCell1(XLDocument1 *doc1,const XLCell c)
+XLCell1::XLCell1(XLDocument1 *doc1,XLWorksheet1 ws1,const XLCell c)
 {
 	m_doc1 = doc1;
+	m_ws1 = ws1;
 	m_c = c;
 }
 
@@ -1364,29 +1445,24 @@ XLCell1::~XLCell1()
 {
 }
 
-const XLCell XLCell1::c()
-{
-	return m_c;
-}
-
-XLDocument1* XLCell1::doc1()
-{
-	return m_doc1;
-}
-
 XLFont1 XLCell1::font()
 {
-	return XLFont1(*this);
+	return XLFont1(m_doc1,*this);
 }
 
 XLBorders1 XLCell1::borders()
 {
-	return XLBorders1(*this);
+	return XLBorders1(m_doc1,*this);
+}
+
+XLCharacters1 XLCell1::characters(int16_t start, int16_t len)
+{
+	return XLCharacters1(m_doc1, *this, start, len);
 }
 
 XLBorder1 XLCell1::borders(int32_t index)
 {
-	return XLBorders1(*this).item(index);
+	return XLBorders1(m_doc1,*this).item(index);
 }
 
 XLCellValueProxy& XLCell1::value() {
@@ -1461,8 +1537,9 @@ void XLCell1::setNumberFormat(std::string value)
 //--------------------class XLCharacters1--------------------------------------------------------------
 XLCharacters1::XLCharacters1() {}
 
-XLCharacters1::XLCharacters1(XLDocument1* doc1, XLCell1 c1, int32_t start, int32_t len)
+XLCharacters1::XLCharacters1(XLDocument1* doc1, XLCell1 c1, int16_t start, int16_t len)
 {
+	m_doc1 = doc1;
 	m_c1 = c1;
 	m_start = start;
 	m_len = len;
@@ -1470,19 +1547,12 @@ XLCharacters1::XLCharacters1(XLDocument1* doc1, XLCell1 c1, int32_t start, int32
 
 XLCharacters1::~XLCharacters1()
 {
-
-}
-
-XLDocument1 *XLCharacters1::doc1()
-{
-	return m_doc1;
 }
 
 XLFont1 XLCharacters1::font()
 {
-	return XLFont1(*this);
+	return XLFont1(m_doc1,*this);
 }
-
 
 //------------------class XLCellRange1--------------------------------------------------
 XLCellRange1::XLCellRange1() {}
@@ -1498,28 +1568,6 @@ XLCellRange1::~XLCellRange1()
 {
 }
 
-XLCellValueProxy& XLCellRange1::value() {
-	for (auto it = m_cr.begin(); it != m_cr.end(); ++it) {
-		return it->value();
-	}
-	return (XLCellValueProxy&)"";
-}
-
-const XLCellRange XLCellRange1::cr()
-{
-	return m_cr;
-}
-
-XLDocument1* XLCellRange1::doc1()
-{
-	return m_doc1;
-}
-
-XLWorksheet1 XLCellRange1::ws1()
-{
-	return m_ws1;
-}
-
 void XLCellRange1::rect(XLRECT *rect)
 {	
 	const XLCellReference tl=m_cr.topLeft();
@@ -1530,19 +1578,19 @@ void XLCellRange1::rect(XLRECT *rect)
 	rect->bottom = br.row();
 }
 
-const std::string XLCellRange1::address()
+char* XLCellRange1::address()
 {
-	return m_cr.address();
+	return (char *)m_cr.address().c_str();
 }
 
 XLBorder1 XLCellRange1::borders(int32_t index)
 {
-	return XLBorders1(*this).item(index);
+	return XLBorders1(m_doc1,*this).item(index);
 }
 
 XLFont1 XLCellRange1::font()
 {
-	return XLFont1(*this);
+	return XLFont1(m_doc1,*this);
 }
 void XLCellRange1::merge()
 {
@@ -1613,18 +1661,18 @@ void XLCellRange1::setNumberFormat(std::string value)
 //--------------------class XLBorders1--------------------------------------------------------
 XLBorders1::XLBorders1() {}
 
-XLBorders1::XLBorders1(XLCell1 c1)
+XLBorders1::XLBorders1(XLDocument1* doc1, XLCell1 c1)
 {
 	m_t = 0;
-	m_doc1 = c1.doc1();
+	m_doc1 = doc1;
 	m_c1 = c1;
 }
 
 
-XLBorders1::XLBorders1(XLCellRange1 cr1)
+XLBorders1::XLBorders1(XLDocument1 *doc1,XLCellRange1 cr1)
 {
 	m_t = 1;
-	m_doc1 = cr1.doc1();
+	m_doc1 = doc1;
 	m_cr1 = cr1;
 }
 
@@ -1632,32 +1680,17 @@ XLBorders1::~XLBorders1()
 {
 }
 
-XLDocument1* XLBorders1::doc1()
-{
-	return m_doc1;
-}
-
-XLCell1 XLBorders1::c1()
-{
-	return m_c1;
-}
-
-XLCellRange1 XLBorders1::cr1()
-{
-	return m_cr1;
-}
-
 XLBorder1 XLBorders1::item(int32_t index)
 {
-	return XLBorder1(*this,index);
+	return XLBorder1(m_doc1,*this,index);
 }
 
 //-----------------class XLBorder1--------------------------------------------------
 
-XLBorder1::XLBorder1(XLBorders1 bs1,int32_t index)
+XLBorder1::XLBorder1(XLDocument1 *doc1,XLBorders1 bs1,int32_t index)
 {
 	m_bs1 = bs1;
-	m_doc1 = bs1.doc1();
+	m_doc1 = doc1;
 	m_index = index;
 }
 
@@ -1740,43 +1773,29 @@ void XLBorder1::setLineStyle(int32_t ls)
 
 //------------------class XLFont1-----------------------------------------------------
 
-XLFont1::XLFont1(XLCell1 c1)
+XLFont1::XLFont1(XLDocument1 *doc1,XLCell1 c1)
 {
 	m_t = 0;
-	m_doc1 = c1.doc1();
+	m_doc1 = doc1;
 	m_c1 = c1;
 }
 
-XLFont1::XLFont1(XLCellRange1 cr1)
+XLFont1::XLFont1(XLDocument1* doc1, XLCellRange1 cr1)
 {
 	m_t = 1;
-	m_doc1 = cr1.doc1();
+	m_doc1 = doc1;
 	m_cr1 = cr1;
 }
 
-XLFont1::XLFont1(XLCharacters1 ch)
+XLFont1::XLFont1(XLDocument1* doc1, XLCharacters1 ch1)
 {
 	m_t = 2;
-	m_doc1 = ch.doc1();
-	m_ch1 = ch;
+	m_doc1 = doc1;
+	m_ch1 = ch1;
 }
 
 XLFont1::~XLFont1()
 {
-}
-
-XLCharacters1 XLFont1::ch1()
-{
-	return m_ch1;
-}
-XLCell1 XLFont1::c1()
-{
-	return m_c1;
-}
-
-XLCellRange1 XLFont1::cr1()
-{
-	return m_cr1;
 }
 
 void XLFont1::setpropchar(int32_t type,int32_t prop, std::string value)
@@ -1794,13 +1813,34 @@ void XLFont1::setpropchar(int32_t type,int32_t prop, std::string value)
 			it->setCellFormat(index);
 		}
 	}
+	if (m_t == 2) {
+		int32_t index, indexf;
+		XLCHARACTERSTRUCT pp;
+		XLCharacters1 ch1 = m_ch1;
+		XLCell1 c1 = ch1.c1();
+		XLWorksheet1 ws1 = c1.ws1();
+		XLCell c = c1.c();
+		pp.sheetno = ws1.index();
+		pp.row = c.cellReference().row();
+		pp.col = c.cellReference().column();
+		pp.start = ch1.start();
+		pp.len = ch1.len();
+		pp.indexf = 0;
+		index = m_doc1->findcharacter((void*)&pp);
+		if (index < 0)index = m_doc1->createcharacter((void*)&pp);
+		if (index < 0)return;
+		indexf = m_doc1->m_characters[index].indexf;
+		indexf = m_doc1->setcharstyle(indexf, type, prop, value);
+		m_doc1->m_characters[index].indexf = indexf;
+		return;
+	}
 }
 
 void XLFont1::setpropint(int32_t type, int32_t prop, int32_t value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c=m_c1.c();
+		XLCell c = m_c1.c();
 		index = c.cellFormat();
 		index = m_doc1->setintstyle(index, type, prop, value);
 		c.setCellFormat(index);
@@ -1814,6 +1854,28 @@ void XLFont1::setpropint(int32_t type, int32_t prop, int32_t value)
 		}
 		return;
 	}
+	if (m_t == 2) {
+		int32_t index, indexf;
+		XLCHARACTERSTRUCT pp;
+		XLCharacters1 ch1 = m_ch1;
+		XLCell1 c1 = ch1.c1();
+		XLWorksheet1 ws1 = c1.ws1();
+		XLCell c = c1.c();
+		pp.sheetno = ws1.index();
+		pp.row = c.cellReference().row();
+		pp.col = c.cellReference().column();
+		pp.start = ch1.start();
+		pp.len = ch1.len();
+		pp.indexf = 0;
+		index = m_doc1->findcharacter((void*)&pp);
+		if (index < 0)index = m_doc1->createcharacter((void*)&pp);
+		if (index < 0)return;
+		indexf = m_doc1->m_characters[index].indexf;
+		indexf = m_doc1->setintstyle(indexf, type, prop, value);
+		m_doc1->m_characters[index].indexf = indexf;
+		return;
+	}
+
 }
 
 void XLFont1::setpropbool(int32_t type, int32_t prop, bool value)
@@ -1832,6 +1894,27 @@ void XLFont1::setpropbool(int32_t type, int32_t prop, bool value)
 			index = m_doc1->setboolstyle(index, type, prop, value);
 			it->setCellFormat(index);
 		}
+		return;
+	}
+	if (m_t == 2) {
+		int32_t index, indexf;
+		XLCHARACTERSTRUCT pp;
+		XLCharacters1 ch1 = m_ch1;
+		XLCell1 c1 = ch1.c1();
+		XLWorksheet1 ws1 = c1.ws1();
+		XLCell c = c1.c();
+		pp.sheetno =ws1.index();
+		pp.row = c.cellReference().row();
+		pp.col = c.cellReference().column();
+		pp.start = ch1.start();
+		pp.len = ch1.len();
+		pp.indexf = 0;
+		index = m_doc1->findcharacter((void*)&pp);
+		if (index < 0)index = m_doc1->createcharacter((void*)&pp);
+		if (index < 0)return;
+		indexf = m_doc1->m_characters[index].indexf;
+		indexf = m_doc1->setboolstyle(indexf, type, prop, value);
+		m_doc1->m_characters[index].indexf = indexf;
 		return;
 	}
 }
@@ -1935,6 +2018,12 @@ void XLFont1::setSubscript(bool value)
 	else n = 0;
 	setpropint(MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_VERTALIGN, n);
 }
+
+void XLFont1::setColor(std::string value)
+{
+	setpropchar(MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_COLOR, value);
+}
+
 
 #ifdef MY_DRAWING
 // ========== XLDrawing Member Functions
@@ -2041,3 +2130,75 @@ XLDocument1* XLDrawing1::doc1()
 	return m_doc1;
 }
 #endif
+
+int utf8next(utf8_int8_t* str) {
+	utf8_int8_t ch = *str; int n;
+	if (0xf0 == (0xf8 & ch)) {
+		n = 4;
+	}
+	else if (0xe0 == (0xf0 & ch)) {
+		n = 3;
+	}
+	else if (0xc0 == (0xe0 & ch)) {
+		n = 2;
+	}
+	else {
+		n = 1;
+	}
+	return n;
+}
+
+utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen);
+
+utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen) {
+	utf8_int8_t* t = str; utf8_int8_t* st = NULL; int kk;
+	size_t length = 0; size_t n = SIZE_MAX; size_t k;
+	k = 0; //if (!len)len = SIZE_MAX;
+	while ((size_t)(str - t) < n && '\0' != *str) {
+		if (length == start)st = str;
+		kk = utf8next(str);
+		str += kk;
+		if (st)k += kk;
+		length++;
+		if (st) {
+			len--;
+			if (len<1)break;
+		}
+	}
+	if (st && !len) {
+		*outlen = k;
+	}
+	else {
+		*outlen = 0;
+	}
+	return (utf8_int8_t*)st;
+}
+
+std::string xlrtf(std::string s, int32_t start, int32_t len, std::string rtf)
+{
+int32_t slen; char* ss; int32_t all = 0;
+slen = utf8len((utf8_int8_t*)s.data());
+if (!slen)return "";
+if (!len)len = slen - start + 1;
+if (start >= slen)return "";
+if (start + len > slen+1)len = slen - start;
+if (len < 1)return "";
+ss = (char*)utf8substr((utf8_int8_t*)s.data(), 0, start - 1, &all);
+std::string s1 = std::string(ss,all);
+ss = (char*)utf8substr((utf8_int8_t*)s.data(), start-1,len, &all);
+std::string s2 = std::string(ss, all);
+ss = (char*)utf8substr((utf8_int8_t*)s.data(), start - 1+len, slen-len-start+1, &all);
+std::string s3 = std::string(ss, all);
+std::string out = std::string("");
+if (s1.length()) {
+	out = out + "<r><t>" + s1 + "</t></r>";
+}
+if (s2.length()) {
+	out = out + "<r><rPr>" + rtf + "</rPr><t>" + s2 + "</t></r>";
+}
+if (s3.length()) {
+	out=out+ "<r><t>"+s3+"</t></r>";
+}
+return out;
+}
+

@@ -186,6 +186,16 @@ typedef struct XLCELLFORMATSTRUCT
 	uint32_t unsave;
 }XLCELLFORMATSTRUCT;
 
+typedef struct XLCHARACTERSTRUCT
+{
+	int16_t sheetno;
+	int32_t row;
+	int16_t col;
+	int16_t start;
+	int16_t len;
+	int32_t indexf;
+}XLCHARACTERSTRUCT;
+
 #pragma pack()
 
 class XLWorkbook1;
@@ -202,6 +212,7 @@ class XLFill1;
 class XLDocument1
 {
 	friend class XLWorkbook1;
+	friend class XLFont1;
 public:
 	XLDocument1();
 	~XLDocument1();
@@ -220,6 +231,9 @@ public:
 
 	int32_t findfont(void* p);
 	int32_t createfont(void* p);
+
+	int32_t findcharacter(void* p);
+	int32_t createcharacter(void* p);
 
 	int32_t findfill(void* p);
 	int32_t createfill(void* p);
@@ -260,16 +274,18 @@ private:
 	XLFILLSTRUCT* m_fills = NULL;
 	int m_fillcount = 0;
 
-	XLCELLFORMATSTRUCT* cellformat = NULL;
+	XLCELLFORMATSTRUCT* m_cellformat = NULL;
 	int m_cellformatcount = 0;
 
 	int m_numberformatnextfreeid = 165;
 	XLNUMBERFORMATSTRUCT* m_numberformat = NULL;
 	int m_numberformatcount = 0;
 
-	XLBORDERSTRUCT* borders = NULL;
-	int bordercount = 0;
+	XLBORDERSTRUCT* m_borders = NULL;
+	int m_bordercount = 0;
 
+	XLCHARACTERSTRUCT* m_characters = NULL;
+	int m_charactercount = 0;
 };
 
 class XLWorkbook1 : public XLWorkbook
@@ -293,7 +309,7 @@ public:
 	XLWorksheet1();
 	XLWorksheet1(XLDocument1* doc1, XLWorksheet ws);
 	~XLWorksheet1();
-	XLWorksheet ws();
+	XLWorksheet ws() { return m_ws; };
 	XLCell1 cell(const std::string &address);
 	XLCell1 cell(int32_t row, int16_t column);
 	XLCellRange1 range(const std::string &address);
@@ -301,7 +317,7 @@ public:
 	XLColumn column(int16_t column);
 	XLRow row(int32_t row);
 	void setSelected(bool sel);
-	int16_t index() const;
+	int16_t index() { return m_index; };
 #ifdef MY_DRAWING
 	bool hasDrawing() const;
 	XLDrawing1& drawing();
@@ -327,14 +343,16 @@ class XLCell1 : public XLCell
 friend XLDocument1;
 public :
 	XLCell1();
-	XLCell1(XLDocument1* doc1, const XLCell c);
+	XLCell1(XLDocument1* doc1, XLWorksheet1 ws1, const XLCell c);
 	~XLCell1();
-	const XLCell c();
 	XLCellValueProxy& value();
 	XLFont1 font();
 	XLBorders1 borders();
 	XLBorder1 borders(int32_t index);
-	XLDocument1* doc1();
+	XLCharacters1 characters(int16_t start, int16_t len);
+	XLDocument1* doc1() { return m_doc1; };
+	XLWorksheet1 ws1() { return m_ws1; };
+	const XLCell c() { return m_c; };
 	int32_t horizontalAlignment();
 	void setHorizontalAlignment(int32_t value);
 	void setHorizontalAlignment(std::string value);
@@ -349,6 +367,7 @@ public :
 	void setNumberFormat(std::string value);
 private:
 	XLDocument1* m_doc1;
+	XLWorksheet1 m_ws1 = XLWorksheet1();
 	XLCell m_c;
 };
 
@@ -359,16 +378,13 @@ public:
 	XLCellRange1();
 	XLCellRange1(XLDocument1* doc1, XLWorksheet1 ws1, const XLCellRange cr);
 	~XLCellRange1();
-//	XLCellRange1& operator=(const XLCellRange1& other);
-//	XLCellRange1& operator=(XLCellRange1&& other) noexcept;
-	XLDocument1 *doc1();
-	XLWorksheet1 ws1();
-	const XLCellRange cr();
+	XLDocument1* doc1() { return m_doc1; };
+	XLWorksheet1 ws1() { return m_ws1; };
+	const XLCellRange cr() { return m_cr; };
 	void rect(XLRECT *rect);
-	XLCellValueProxy& value();
 	XLFont1 font();
 	void merge();
-	const std::string address();
+	char * address();
 	XLBorder1 borders(int32_t index);
 	void setpropchar(int32_t type, int32_t prop, std::string value);
 	void setpropint(int32_t type, int32_t prop, int32_t value);
@@ -390,28 +406,31 @@ class XLCharacters1
 {
 public:
 	XLCharacters1();
-	XLCharacters1(XLDocument1 *doc1,XLCell1 c1,int32_t start,int32_t len);
+	XLCharacters1(XLDocument1 *doc1,XLCell1 c1,int16_t start,int16_t len);
 	~XLCharacters1();
-	XLDocument1 *doc1();
+	XLDocument1* doc1() { return m_doc1; };
+	XLCell1 c1() { return m_c1; };
+	int16_t start() { return m_start; };
+	int16_t len() { return m_len; };
 	XLFont1 font();
 private:
 	XLDocument1 *m_doc1;
 	XLCell1 m_c1=XLCell1();
-	int32_t m_start;
-	int32_t m_len;
+	int16_t m_start;
+	int16_t m_len;
 };
 
 class XLBorders1
 {
 public:
 	XLBorders1();
-	XLBorders1(XLCell1 c1);
-	XLBorders1(XLCellRange1 cr1);
+	XLBorders1(XLDocument1 *doc1,XLCell1 c1);
+	XLBorders1(XLDocument1 *doc1,XLCellRange1 cr1);
 	~XLBorders1();
-	XLDocument1* doc1();
+	XLDocument1* doc1() { return m_doc1; };
 	int32_t t() { return m_t; };
-	XLCell1 c1();
-	XLCellRange1 cr1();
+	XLCell1 c1() { return m_c1; };
+	XLCellRange1 cr1() { return m_cr1; };
 	XLBorder1 item(int32_t n);
 private:
 	int32_t m_t;
@@ -423,7 +442,7 @@ private:
 class XLBorder1
 {
 public:
-	XLBorder1(XLBorders1 bs,int32_t index);
+	XLBorder1(XLDocument1 *doc1,XLBorders1 bs,int32_t index);
 	~XLBorder1();
 	void setLineStyle(int32_t ls);
 	int32_t lineStyle();
@@ -447,13 +466,13 @@ class XLFont1
 	friend XLCellRange1;
 	friend XLCharacters1;
 public:
-	XLFont1(XLCell1 c1);
-	XLFont1(XLCellRange1 cr1);
-	XLFont1(XLCharacters1 ch1);
+	XLFont1(XLDocument1 *doc1,XLCell1 c1);
+	XLFont1(XLDocument1* doc1, XLCellRange1 cr1);
+	XLFont1(XLDocument1* doc1, XLCharacters1 ch1);
 	~XLFont1();
-	XLCell1 c1();
-	XLCellRange1 cr1();
-	XLCharacters1 ch1();
+	XLCell1 c1() { return m_c1; };
+	XLCellRange1 cr1(){ return m_cr1; };
+	XLCharacters1 ch1() { return m_ch1; };
 	char * name();
 	void setSize(int32_t value);
 	int32_t size();
@@ -473,6 +492,7 @@ public:
 	void setSuperscript(bool value);
 	bool subscript();
 	void setSubscript(bool value);
+	void setColor(std::string value);
 private :
 	XLDocument1* m_doc1;
 	int32_t m_t = 0;
@@ -480,6 +500,7 @@ private :
 	XLCellRange1 m_cr1=XLCellRange1();
 	XLCharacters1 m_ch1=XLCharacters1();
 };
+
 #ifdef MY_DRAWING
 class XLDrawing1 : public XLXmlFile
 {
@@ -520,3 +541,17 @@ private:
 
 };
 #endif
+
+/* Demo RTF - included
+<r>
+	<t>pri</t>
+</r>
+<r>
+	<rPr>
+		<u/>
+		<i/>
+		<b/>
+	</rPr>
+	<t>vet</t>
+</r>
+*/
