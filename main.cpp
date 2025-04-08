@@ -1,39 +1,49 @@
 #include "myopenxlsx.h"
+#include <stdio.h>
 //using namespace std::literals::string_literals;
 using namespace std::string_literals;
 int main()
 {
 	XLDocument1 doc;
+
 	doc.create("./Demo.xlsx", XLForceOverwrite);
-	auto wks = doc.workbook().worksheet("Sheet1");
-	auto c = wks.cell("A1");
+	XLWorksheet1 wks = doc.workbook().worksheet(1);
+	XLCell1 c = wks.cell("A1");
 	c.value() = c.font().name();
+	c.font().setColor("yellow");
+	c.fill().setColor("green");
+	c.fill().setPatternType(1);
+
 	auto f = c.font();
 	f.setName((char*)"Times New Roman");
 	c = wks.cell("B1");
 	c.value() = "size";
 	c.font().setSize(20);
+
+	c.fill().setColor("red");
+	c.fill().setPatternType(1);
+
 	c = wks.cell("C1");
 	c.value() = "bold";
 	c.font().setBold(true);
 	c = wks.cell("D1");
-	c.value() = "italic";
-	c.font().setItalic(true);
+	c.value() = "bold italic";
+	c.font().setBold(true).setItalic();
 	c = wks.cell("E1");
 	c.value() = "strike";
-	c.font().setStrikethrough(true);
+	c.font().setStrikethrough().setColor("gold");
 	c = wks.cell("F1");
-	c.value() = "uline";
-	c.font().setUnderline(1);
+	c.value() = "single";
+	c.font().setUnderline("single").setColor("cyan");
 	c = wks.cell("G1");
-	c.value() = "uline2";
-	c.font().setUnderline(2);
+	c.value() = "double";
+	c.font().setUnderline("double").setColor("silver");
 	c = wks.cell("H1");
 	c.value() = "super";
-	c.font().setSuperscript(true);
+	c.font().setSuperscript();
 	c = wks.cell("I1");
 	c.value() = "sub";
-	c.font().setSubscript(true);
+	c.font().setSubscript();
 
 	c = wks.cell("J1");
 	c.value() = "all";
@@ -45,55 +55,70 @@ int main()
 
 	c = wks.cell("A2");
 	c.value() = "left";
-	c.setHorizontalAlignment("left");
+	c.setHorizontalAlignment("left").setVerticalAlignment("center");
 	c = wks.cell("B2");
 	c.value() = "center";
-	c.setHorizontalAlignment("center");
+	c.setHorizontalAlignment("center").setVerticalAlignment("center");
 	c = wks.cell("C2");
 	c.value() = "right";
-	c.setHorizontalAlignment("right");
+	c.setHorizontalAlignment("right").setVerticalAlignment("center");
 
 	c = wks.cell("D2");
 	c.value() = "top";
-	c.setVerticalAlignment("top");
+	c.setVerticalAlignment("top").setHorizontalAlignment("center");
 	c = wks.cell("E2");
 	c.value() = "center";
-	c.setVerticalAlignment("center");
+	c.setVerticalAlignment("center").setHorizontalAlignment("center");
 	c = wks.cell("F2");
 	c.value() = "bottom";
-	c.setVerticalAlignment("bottom");
+	c.setVerticalAlignment("bottom").setHorizontalAlignment("center");
 
 	c = wks.cell("G2");
 	c.value() = "wrap text wrap text";
-	c.setWraptext(true);
+	c.setWraptext();
 	c = wks.cell("H2");
 	c.value() = "shrink shrink shrink";
-	c.setShrinktofit(true);
+	c.setShrinktofit();
 
 	c = wks.cell("B3");
 	c.value() = "border left";
-	c.borders(0).setLineStyle(1);
+	auto b = c.borders(0);
+//	auto b = bs.item(0);
+	b.setLineStyle(1);
+	b.setColor("blue");
 
 	c = wks.cell("D3");
 	c.value() = "border right";
-	c.borders(1).setLineStyle(2);
+	b = c.borders(1);
+//	b = bs.item(1);
+	b.setLineStyle(2);
+	b.setColor("green");
 
 	c = wks.cell("F3");
 	c.value() = "border top";
-	c.borders(2).setLineStyle(3);
+	b = c.borders(2);
+//	b = bs.item(2);
+	b.setLineStyle(3);
+	b.setColor("Gold");
 
 	c = wks.cell("H3");
 	c.value() = "border bottom";
-	c.borders(3).setLineStyle(4);
-
-	c = wks.cell("J3");
-	c.value() = "diagonalUp";
-	c.borders(4).setLineStyle(5);
+	b = c.borders(3);
+//	b = bs.item(3);
+	b.setLineStyle(4);
+	b.setColor("black");
 
 	c = wks.cell("L3");
-	c.value() = "diagonalDowm";
-	c.borders(5).setLineStyle(6);
+	c.value() = "diagonalUp";
+	b = c.borders(6);
+//	b = bs.item(6);
+	b.setLineStyle(7);
 
+	c = wks.cell("M3");
+	c.value() = "diagonalDowm";
+	b = c.borders(7);
+//	b = bs.item(7);
+	b.setLineStyle(8);
 
 	c=wks.cell("A5");
 	c.value() = "text";
@@ -114,7 +139,6 @@ int main()
 	c.value() = "01.04.2025";
 	c.setNumberFormat("yyyy.mm.dd");
 
-
 	c = wks.cell("B7");
 	c.value() = "size bold wrap text merge";
 
@@ -123,29 +147,33 @@ int main()
 	r.font().setSize(16);
 	r.setWraptext(true);
 
-
-	for(int32_t i=0;i<4;i++)r.borders(i).setLineStyle(1);
-	wks.cell("D7").value() = r.address();
 	wks.merge("B7:C8");
-/*
-	c = wks.cell("E7");
-	c.value() = "123456789";
-	auto ch=c.characters(3, 4);
-	ch.font().setBold(true);
-*/
+
+	for (int32_t i = 0; i < 4; i++) {
+		auto b = r.borders(i);
+//		auto b=bs.item(i);
+		b.setLineStyle(1);
+		b.setColor("red");
+	}
 	c = wks.cell("E7");
 	c.value() = "Privet";
-	auto ch = c.characters(2, 2);
-	ch.font().setItalic(true);
-	ch.font().setBold(true);
+	c.characters(2, 2).font().setItalic(true).setBold(true);
 
 	c = wks.cell("G7");
 	c.value() = "fontname";
-	ch = c.characters(5, 4);
-	ch.font().setUnderline(2);
-	ch.font().setSize(20);
-	ch.font().setColor("0000FF");
+	c.characters(5, 4).font().setUnderline("double").setSize(18).setColor("blue");
 
+//	doc.workbook().addWorksheet("New");
+//	doc.workbook().cloneSheet("Sheet1", "Clone");
+//	doc.workbook().addWorksheet("Old");
+//	doc.workbook().deleteSheet("Old");
+	XLRECT rect;
+	rect.left = 10;
+	rect.top = 10;
+	rect.right = 12;
+	rect.bottom = 16;
+	char* pic = (char *)"multfilm.jpg";
+	wks.addPicture(pic, &rect);
 	doc.save();
 	doc.close();
 	return 0;
