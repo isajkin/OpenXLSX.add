@@ -3,3 +3,4 @@ At the first stage, the ability to sequentially install styles without using int
 A set of commands will also be offered that emulate Excel commands: Insert, Copy, Paste.
 Soon we will implement the insertion of a drawing with the ability to set a small set of attributes.
 The library is developed using VS 2022 for X86 The OpenXLSX library is built for Multithreaded use (/MT)
+Added string names of colors (more than 150 pcs) and string values ​​for attributes. Work on inserting a drawing has begun.
