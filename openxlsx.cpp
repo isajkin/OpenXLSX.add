@@ -4,12 +4,11 @@
 #include <string.h>
 #include "utf8.h"
 
-const std::string ShapeNodeNameDr = "xdr:twoCellAnchor";
-
 int nametorgb(char*);
 int utf8next(utf8_int8_t* str);
 utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen);
 std::string xlrtf(std::string s, int32_t start, int32_t len, std::string rtf);
+void setAttribute(XMLNode n, char* path, char* attribute, char* value);
 
 
 static XLNUMBERFORMATSTRUCTEMBED numberformatem[] =
@@ -106,11 +105,120 @@ static XLUnderlineStyle XLUnderlineStyleFromString(std::string underline)
 	return XLUnderlineInvalid;
 }
 
+static XMLNode setNode(XMLNode root, std::string name)
+{
+	XMLNode f;
+	f = root.first_child_of_type(pugi::node_element);
+	while (!f.empty()) {
+		if (f.raw_name() == name)break;
+		f = f.next_sibling_of_type(pugi::node_element);
+	}
+	if (f.empty()) {
+		f = root.append_child(name.c_str());
+	}
+	return f;
+}
+
+
 static std::string upper(std::string str)
 {
 	return std::string(_strupr(str.data()));
 
 }
+
+static uint16_t ntohs(uint16_t val)
+{
+	typedef struct temp {
+			uint8_t a;
+			uint8_t b;
+	}temp;
+
+	union u {
+		temp a;
+		int16_t n16;
+	}u;
+	u.n16 = val;
+	uint8_t t = u.a.a;
+	u.a.a = u.a.b;
+	u.a.b = t;
+	return u.n16;
+}
+
+static uint32_t ntohl(uint32_t val)
+{
+	typedef struct temp {
+		uint8_t a;
+		uint8_t b;
+		uint8_t c;
+		uint8_t d;
+	}temp;
+
+	union u {
+		temp a;
+		int32_t n32;
+	}u;
+	u.n32 = val;
+	uint8_t t = u.a.a;
+	u.a.a = u.a.d;
+	u.a.d = t;
+	t = u.a.b;
+	u.a.b = u.a.c;
+	u.a.c = t;
+
+	return u.n32;
+
+}
+
+int picinfo(unsigned char* buf, int buflen, XLPICINFO *info)
+{
+	int j;
+	memset(info, 0, sizeof(XLPICINFO));
+
+	if (buf[0] == 0xff && buf[1] == 0xd8) { //jpeg
+		j = 2;
+		while (j < buflen) {
+			if (buf[j] == 0xff && buf[j + 1] == 0xc0) {
+				uint16_t n = ntohs(*(uint16_t*)(buf + j + 5));
+				info->size.cy = n;
+				n = ntohs(*(uint16_t*)(buf + j + 7));
+				info->size.cx = n;
+				strcpy(info->ext, "jpg");
+				return 1;
+			}
+			j++;
+		}
+	}
+	if (buf[0] == 0x89 && buf[1] == 0x50 && buf[2] == 0x4e && buf[3] == 0x47) {	//png
+		uint32_t n = ntohl(*(uint32_t*)(buf + 16));
+		info->size.cx = n;
+		n = ntohl(*(uint32_t*)(buf + 20));
+		info->size.cy = n;
+		strcpy(info->ext, "png");
+		return 1;
+	}
+	if (buf[0] == 0x42 && buf[1] == 0x4d) {	//bmp
+		uint32_t n = ntohl(*(uint32_t*)(buf + 15));
+		info->size.cx = n;
+		n = ntohl(*(uint32_t*)(buf +19));
+		info->size.cy = n;
+		strcpy(info->ext, "bmp");
+		return 1;
+	}
+	if (buf[0] == 'G' && buf[1] == 'I' && buf[2] == 'F') {
+		info->size.cx = *(uint16_t*)(buf + 6);
+		info->size.cy = *(uint16_t*)(buf + 8);
+		strcpy(info->ext, "gif");
+		return 1;
+	}
+	if (buf[0] == 0 && buf[1] == 0 && buf[2] == 1 && buf[3] == 0) {
+		if (buf[6] == 0)info->size.cx = 256; else info->size.cx = buf[6];
+		if (buf[7] == 0)info->size.cy = 256; else info->size.cy = buf[7];
+		strcpy(info->ext, "ico");
+		return 1;
+	}
+	return 0;
+}
+
 
 //----------------------class XLDocument1-----------------------------------
 #ifdef MY_DRAWING
@@ -130,7 +238,7 @@ char* XLDocument1::shapeAttribute(int sheetXmlNo, int shapeNo, char* path)
 			if (i)ss = std::string((const char*)s0, (size_t)i);
 			s0 = s + 1;
 			if (att && i) {
-				const pugi::char_t* a = (const pugi::char_t*)sa.data();
+				const pugi::char_t* a = (const pugi::char_t*)ss.data();
 				if (n.attribute(a).empty())break;
 				return (char*)n.attribute(a).as_string();
 			}
@@ -150,13 +258,10 @@ char* XLDocument1::shapeAttribute(int sheetXmlNo, int shapeNo, char* path)
 	}
 	return (char*)"";
 }
-#endif
-#ifdef MY_DRAWING
-void XLDocument1::setShapeAttribute(int sheetXmlNo, int shapeNo, char* path, char* attribute, char* value)
-{
-	char* s, * s0; int i, att = 0, val = 0; XMLNode f;
 
-	std::string ss, sa, sv;
+XMLNode XLDocument1::shapeXMLNode(int sheetXmlNo, int shapeNo, char* path)
+{
+	char* s, * s0; int i; XMLNode f; std::string ss;
 
 	XLWorksheet wks = doc()->workbook().worksheet(sheetXmlNo);
 	wks.drawing1();
@@ -165,71 +270,46 @@ void XLDocument1::setShapeAttribute(int sheetXmlNo, int shapeNo, char* path, cha
 	XMLNode n = dr.shapeNode((uint32_t)shapeNo - 1);
 	s = s0 = path;
 	while (1) {
-		if (*s == '/' || *s == '@' || *s == '=' || *s == ',' || !*s) {
+		if (*s == '/' || !*s) {
 			i = s - s0;
 			if (i)ss = std::string((const char*)s0, (size_t)i);
 			s0 = s + 1;
-			if (att && i) {
-				if (*s == '=') {
-					sa = ss;
+			if ( i) {
+				f = n.first_child_of_type(pugi::node_element);
+				while (!f.empty()) {
+					if (f.raw_name() == ss)break;
+					f = f.next_sibling_of_type(pugi::node_element);
 				}
-				else {
-					if (val) {
-						sv = ss;
-					}
-				}
+				if (f.empty())break;
+				n = f;
 			}
-			if (att && val && i) {
-				const pugi::char_t* a = (const pugi::char_t*)sa.data();
-				if (n.attribute(a).empty())n.append_attribute(a) = sv.data();
-				else n.attribute(a).set_value(sv.data());
-				att = 0;
-				val = 0;
-			}
-			else {
-				if (!att && !val && i) {
-					f = n.first_child_of_type(pugi::node_element);
-					while (!f.empty()) {
-						if (f.raw_name() == ss)break;
-						f = f.next_sibling_of_type(pugi::node_element);
-					}
-					if (f.empty()) {
-						f = n.append_child(ss.c_str());
-					}
-					if (*s != ',') {
-						n = f;
-					}
-				}
-			}
-			if (!*s)break;
-			if (*s == '@')att = 1;
-			if (*s == '=')val = 1;
-			if (*s == '/') {
-				s0 = s + 1;
-			}
+			if (!*s)return n;
 		}
 		s++;
 	}
-	if (attribute && *attribute) {
-		const pugi::char_t* a = (const pugi::char_t*)attribute;
-		if (n.attribute(a).empty())n.append_attribute(a) = value;
-		else n.attribute(a).set_value(value);
-	}
-	else {
-		if (value && *value)
-			n.text() = value;
-	}
-
-	return;
+	return nullptr;
 }
+
 #endif
-#ifdef MY_DRAWING
-int XLDocument1::appendPictures(int sheetXmlNo, void* buffer, int bufferlen, char* ext, XLRECT* rect)
+
+void XLDocument1::setShapeAttribute(int sheetXmlNo, int shapeNo, char* path, char* attribute, char* value)
 {
-	using namespace std::literals::string_literals;
-	std::string xmlns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-	XMLNode root;
+	char* s, * s0; int att = 0, val = 0; XMLNode f;
+
+	std::string ss, sa, sv;
+
+	XLWorksheet wks = doc()->workbook().worksheet(sheetXmlNo);
+	wks.drawing1();
+
+	XLDrawing1 dr = doc()->sheetDrawing1((uint16_t)sheetXmlNo);
+	XMLNode n = dr.shapeNode((uint32_t)shapeNo - 1);
+	setAttribute(n, path, attribute, value);
+}
+
+int XLDocument1::insertToImage(int sheetXmlNo, void* buffer, int bufferlen, char* ext, XLRelationshipItem *embed)
+{
 	int id = 1;
+	using namespace std::literals::string_literals;
 	std::string v;
 	v.assign((const char*)buffer, (const size_t)bufferlen);
 
@@ -259,59 +339,187 @@ int XLDocument1::appendPictures(int sheetXmlNo, void* buffer, int bufferlen, cha
 	constexpr const bool DO_NOT_THROW = true;
 
 	std::string imgtarget = std::string("../media/image") + std::to_string(id) + "." + std::string(ext);
-	XLRelationshipItem imgitem = doc()->m_drwRelationships.addRelationship(XLRelationshipType::Image, imgtarget);
+	*embed  = doc()->m_drwRelationships.addRelationship(XLRelationshipType::Image, imgtarget);
+	return id;
+}
 
-	XLWorksheet wks = doc()->workbook().worksheet(sheetXmlNo);
-	wks.drawing1();
+XLShape1 XLDocument1::addLine(int sheetXmlNo,XLRECT* rect,XLSIZE *size)
+{
+	int32_t id,index, n; XMLNode root;
+	XLDrawing1 dr = doc()->sheetDrawing1(sheetXmlNo);
+	if (rect->right == 0 && rect->bottom == 0)n = 1;
+	else n = 2;
+	XLShape1 shape=dr.createShape(n);
+	id = dr.shapeCount();
+	index = id - 1;
+	root = dr.shapeNode(index);
+
+	if (n == 1 || n == 2) {
+		shape.from(rect->top - 1, rect->left - 1, 0, 0);
+	}
+
+	if (n == 1) {
+		shape.ext(MY_XLSCALE * size->cx, MY_XLSCALE * size->cy);
+	}
+
+	if (n == 2) {
+		shape.to(rect->bottom - 1, rect->right - 1, 0, 0);
+	}
+	XMLNode cxnsp = shape.setCxnSp(NULL);
+	shape.setId(id);
+	shape.setName(std::string("Line ") + std::to_string(id).data());
+	XMLNode nvcxnsppr = setNode(cxnsp,"xdr:nvCxnSpPr");
+	XMLNode cnvcxnsppr = setNode(nvcxnsppr,"xdr:cNvCxnSpPr");
+	XLPictureFormat1 pf = shape.pictureFormat();
+	pf.setXfrm();
+	pf.setPrstGeom((char *)"line");
+	XMLNode ln = pf.setLn();
+	XMLNode solidfill = setNode(ln,"a:solidFill");
+
+	shape.setClientData();
+
+	return shape;
+
+}
+
+XLShape1 XLDocument1::addTextBox(int sheetXmlNo, XLRECT* rect, XLSIZE* size)
+{
+	int32_t id, n; XMLNode root; uint32_t index;
+	XLDrawing1 dr = doc()->sheetDrawing1(sheetXmlNo);
+	if (rect->right == 0 && rect->right == 0)n = 1;
+	else n = 2;
+	XLShape1 shape=dr.createShape(n);
+	id = dr.shapeCount();
+	index = id - 1;
+	root = dr.shapeNode(index);
+
+	if (n == 1 || n == 2) {
+		shape.from(rect->top - 1, rect->left - 1, 0, 0);
+	}
+
+	if (n == 1) {
+		shape.ext(MY_XLSCALE * size->cx, MY_XLSCALE * size->cy);
+	}
+
+	if (n == 2) {
+		shape.to(rect->bottom - 1, rect->right - 1, 0, 0);
+	}
+	XMLNode sp = shape.setSp(NULL,NULL);
+	shape.setId(id);
+	shape.setName(std::string("TextBox ") + std::to_string(id).data());
+
+	XMLNode nvsppr = setNode(sp,"xdr:nvSpPr");
+	XMLNode cnvsppr = setNode(nvsppr,"xdr:cNvSpPr");
+	cnvsppr.append_attribute("txBox") = "1";
+
+	XLPictureFormat1 pf = shape.pictureFormat();
+	pf.setXfrm();
+	pf.setPrstGeom((char *)"rect");
+	XMLNode ln = pf.setLn();
+	XMLNode solidfill = ln.append_child("a:solidFill");
+
+	shape.setClientData();
+
+	return shape;
+
+}
+
+XLShape1 XLShapes1::addShape(int32_t type,float left,float top,float width,float height)
+{
+	int32_t id, n = 2; XMLNode root; uint32_t index; char* name; char* prst;
+
+	XLDrawing1 dr = m_dr1;
+
+	switch (type) {
+		case 9:name = (char*)"Ellipse"; prst =(char *) "ellipse"; break;
+	}
+
+	XLShape1 shape = dr.createShape(n);
+
+	id = dr.shapeCount();
+	index = id - 1;
+	root = dr.shapeNode(index);
+
+	shape.from(top,left, 0, 0);
+	shape.to(top+height - 1,left+width - 1, 0, 0);
+
+	XMLNode sp = shape.setSp(NULL, NULL);
+	shape.setId(id);
+	shape.setName(std::string(name) + std::to_string(id).data());
+
+	XMLNode nvsppr = setNode(sp, "xdr:nvSpPr");
+	XMLNode cnvsppr = setNode(nvsppr, "xdr:cNvSpPr");
+
+	XLPictureFormat1 pf = shape.pictureFormat();
+	pf.setXfrm();
+	pf.setPrstGeom(prst);
+	XMLNode ln = pf.setLn();
+	XMLNode solidfill = ln.append_child("a:solidFill");
+
+	shape.setClientData();
+
+	return shape;
+
+}
+
+static void setAtt(XMLNode node, char* att, char* val)
+{
+	if (node.attribute(att).empty())node.append_attribute(att) = val;
+	else node.attribute(att).set_value(val);
+}
+
+XLShape1 XLDocument1::addPicture(int sheetXmlNo, void* buffer, int bufferlen, XLRECT* rect, XLPICINFO* info)
+{
+	using namespace std::literals::string_literals;
+	std::string xmlns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+	XMLNode root;
+	int id; int n; int index;
+	std::string v;
+	XLRelationshipItem  embed;
+
+	id = insertToImage(sheetXmlNo, buffer, bufferlen, info->ext, &embed);
 
 	XLDrawing1 dr = doc()->sheetDrawing1(sheetXmlNo);
-	dr.createShape();
-	root = dr.shapeNode(dr.shapeCount() - 1);
-	XMLNode from = root.append_child("xdr:from");
-	from.append_child("xdr:col").text() = std::to_string(rect->left - 1).data();
-	from.append_child("xdr:colOff").text() = "0";
-	from.append_child("xdr:row").text() = std::to_string(rect->top - 1).data();
-	from.append_child("xdr:rowOff").text() = "0";
-	XMLNode to = root.append_child("xdr:to");
-	to.append_child("xdr:col").text() = std::to_string(rect->right - 1).data();
-	to.append_child("xdr:colOff").text() = "0";
-	to.append_child("xdr:row").text() = std::to_string(rect->bottom - 1).data();
-	to.append_child("xdr:rowOff").text() = "0";
-	XMLNode pic = root.append_child("xdr:pic");
-	XMLNode nvpicpr = pic.append_child("xdr:nvPicPr");
-	XMLNode pname = nvpicpr.append_child("xdr:cNvPr");
-	pname.append_attribute("id") = std::to_string(id).data();
-	pname.append_attribute("name") = (std::string("Picture ") + std::to_string(id)).data();
-	XMLNode cpname = nvpicpr.append_child("xdr:cNvPicPr");
-	XMLNode piclocks = cpname.append_child("a:picLocks");
-	//   piclocks.append_attribute("noChangeAspect") = "1";
-	XMLNode bf = pic.append_child("xdr:blipFill");
-	XMLNode blip = bf.append_child("a:blip");
-	blip.append_attribute("xmlns:r") = xmlns.data();
-	blip.append_attribute("r:embed") = imgitem.id().data();
-	// clrChange 寫箮 ⼲ റ怒 
-	//   XMLNode clr = blip.append_child("a:clrChange");
-	//    XMLNode clrfrom=clr.append_child("a:clrFrom");
-	//    XMLNode srgb = clrfrom.append_child("a:srgbClr");
-	//    srgb.append_attribute("val")="FFFFFF";
-	//    XMLNode clrto = clr.append_child("a:clrTo");
-	//    srgb = clrfrom.append_child("a:srgbClr");
-	//    srgb.append_attribute("val") = "FFFFFF";
+	if (rect->right == 0 && rect->right == 0)n = 1;
+	else n = 2;
+	XLShape1 shape=dr.createShape(n);
+	index = dr.shapeCount() - 1;
 
-	 //   XMLNode stretch= bf.append_child("a:stretch");
-	//    stretch.append_child("a:fillRect");
-	XMLNode sppr = pic.append_child("xdr:spPr");
-	XMLNode xfrm = sppr.append_child("a:xfrm");
-	// a:off 衡:ext 寫箻 ⼲ റ���//    xfrm.append_child("a:off");
-	//    xfrm.append_child("a:ext");
-	XMLNode geom = sppr.append_child("a:prstGeom");
-	geom.append_attribute("prst") = "rect";
-	geom.append_child("a:avLst");
-	root.append_child("xdr:clientData");
+	root = dr.shapeNode(index);
 
-	return dr.shapeCount();
+	if (n == 1 || n == 2) {
+		shape.from(rect->top - 1, rect->left - 1, 0, 0);
+	}
+
+	if (n == 1) {
+		shape.ext(MY_XLSCALE * info->size.cx, MY_XLSCALE * info->size.cy);
+	}
+
+	if (n == 2) {
+		shape.to(rect->bottom - 1, rect->right - 1, 0, 0);
+	}
+
+	XMLNode pic = shape.setPic(NULL);
+	shape.setId(id);
+	shape.setName(std::string("Picture ") + std::to_string(id).data());
+
+	XMLNode nvpicpr = setNode(pic,"xdr:nvPicPr");
+
+	XMLNode cpname = setNode(nvpicpr,"xdr:cNvPicPr");
+	XMLNode bf = setNode(pic,"xdr:blipFill");
+	XMLNode blip = setNode(bf,"a:blip");
+
+	setAtt(blip,(char *)"xmlns:r",xmlns.data());
+	setAtt(blip,(char *)"r:embed",embed.id().data());
+
+	XLPictureFormat1 pf = shape.pictureFormat();
+	pf.setXfrm();
+	pf.setPrstGeom((char *)"rect");
+
+	shape.setClientData();
+
+	return shape;
 }
-#endif
 
 XLDocument1::XLDocument1()
 {
@@ -332,6 +540,7 @@ XLDocument1::XLDocument1()
 	m_charactercount = 0;
 
 };
+
 XLDocument1::~XLDocument1() { delete m_doc; };
 
 void XLDocument1::getallstyles()
@@ -537,14 +746,10 @@ void XLDocument1::setcharacters()
 			rtf = rtf + "<color rgb=\"" + color.hex() + "\"/>";
 		}
 		if (f->size) {
-			char buf[32];
-			char* s = _itoa(f->size, buf, 10);
-			rtf = rtf + "<sz val=\"" + std::string(s) + "\"/>";
+			rtf = rtf + "<sz val=\"" + std::to_string(f->size) + "\"/>";
 		}
 		if (f->charset) {
-			char buf[32];
-			itoa(f->charset, buf, 10);
-			rtf = rtf + "<charset val=\"" + std::string(buf) + "\"/>";
+			rtf = rtf + "<charset val=\"" + std::to_string(f->charset) + "\"/>";
 		}
 		if (f->name[0])rtf = rtf + "<rFont val=\"" + std::string(f->name) + "\"/>";
 
@@ -1830,117 +2035,153 @@ void XLDocument1::close()
 
 XLWorkbook1 XLDocument1::workbook()
 {
-	XLWorkbook1 m_wb1=XLWorkbook1(this,m_doc->workbook());
-	return m_wb1;
+	return XLWorkbook1(this);
 }
 
 //---------------class XLWorkbook1------------------------------------------------------------------------
 
-XLWorkbook1::XLWorkbook1(XLDocument1 * doc1,const XLWorkbook &wb)
+XLWorkbook1::XLWorkbook1(XLDocument1* doc1)
 {
 	m_doc1 = doc1;
-	m_wb = wb;
+	m_wb = new XLWorkbook();
+	XLDocument* d = doc1->doc();
+	*m_wb=d->workbook();
+	XLWorksheet* ws = new XLWorksheet();
+	*ws=m_wb->worksheet(1);
+
 }
+
 
 XLWorksheet1 XLWorkbook1::worksheet(uint16_t n)
 {
-	const XLWorksheet & ws=m_wb.worksheet(n);
-	return XLWorksheet1(m_doc1,ws);
+	return XLWorksheet1(m_doc1,this,n);
 }
 
 XLWorksheet1 XLWorkbook1::worksheet(const std::string & name)
-{
-	const XLWorksheet& ws = m_wb.worksheet(name);
-	return XLWorksheet1(m_doc1,ws);
+{  
+	return XLWorksheet1(m_doc1,this,name);
 
 }
 
 void XLWorkbook1::addWorksheet(const std::string& name)
 {
-	m_wb.addWorksheet(name);
+	m_wb->addWorksheet(name);
 }
 void XLWorkbook1::cloneSheet(const std::string& name, const std::string& newname)
 {
-	m_wb.cloneSheet(name,newname);
+	m_wb->cloneSheet(name,newname);
 }
 void XLWorkbook1::deleteSheet(const std::string& name)
 {
-	m_wb.deleteSheet(name);
-}
-unsigned int XLWorkbook1::worksheetCount()
-{
-	return m_wb.worksheetCount();
+	m_wb->deleteSheet(name);
 }
 
+unsigned int XLWorkbook1::worksheetCount()
+{
+	return m_wb->worksheetCount();
+}
+
+/*
 XLWorksheet1 XLWorkbook1::worksheet(const char *name)
 {
 	const XLWorksheet& ws = m_wb.worksheet((const std::string&)std::string(name));
-	return XLWorksheet1(m_doc1,ws);
+	return XLWorksheet1(m_doc1,this,ws);
 }
+*/
 
 //---------------------class XLWorksheet1-----------------------------------------------------------------
 
-XLWorksheet1::XLWorksheet1(XLDocument1 *doc1, const XLWorksheet & ws)
+XLWorksheet1::XLWorksheet1(XLDocument1 *doc1, XLWorkbook1 *wb1,XLWorksheet  *ws)
 {
 	m_doc1 = doc1;
+	m_wb1 = wb1;
 	m_ws = ws;
-	m_index = ws.index();
-#ifdef MY_DRAWING
-	XLDrawing1();
-#endif
+	m_index = ws->index();
+//	XLDrawing1();
+}
+
+
+XLWorksheet1::XLWorksheet1(XLDocument1* doc1, XLWorkbook1* wb1, const std::string & name)
+{
+	m_doc1 = doc1;
+	m_wb1 = wb1;
+	m_ws = new XLWorksheet(wb1->wb()->worksheet(name));
+	m_index = m_ws->index();
+//	XLDrawing1();
+}
+
+XLWorksheet1::XLWorksheet1(XLDocument1* doc1, XLWorkbook1* wb1, uint16_t index)
+{
+	m_doc1 = doc1;
+	m_wb1 = wb1;
+	XLWorkbook* wb = wb1->wb();
+	XLWorksheet ws = wb->worksheet(index);
+	m_ws = new XLWorksheet(ws);
+	m_index = m_ws->index();
+//	XLDrawing1();
 }
 
 XLCell1 XLWorksheet1::cell(const std::string &address)
 {
-	return XLCell1(m_doc1,this ,m_ws.cell(address) );
+	return XLCell1(m_doc1,this ,address);
 }
 
 XLCell1 XLWorksheet1::cell(char * address)
 {
-	return XLCell1(m_doc1, this, m_ws.cell(_strupr(address)));
+	return XLCell1(m_doc1, this, address);
 }
 
 XLCell1 XLWorksheet1::cell(int32_t row,int16_t column)
 {
-	return XLCell1(m_doc1,this,m_ws.cell(row,column));
+	return XLCell1(m_doc1,this,row,column);
 }
 
 XLCellRange1 XLWorksheet1::range()
 {
-	return XLCellRange1(m_doc1, this, m_ws.range());
+	return XLCellRange1(m_doc1, this);
 }
 
 XLCellRange1 XLWorksheet1::range(std::string const& address)
 {
-	return XLCellRange1(m_doc1,this,m_ws.range(address));
+	return XLCellRange1(m_doc1,this,address);
+}
+
+XLCellRange1 XLWorksheet1::range(std::string const& address1, std::string const& address2)
+{
+	return XLCellRange1(m_doc1, this, address1,address2);
 }
 
 XLCellRange1 XLWorksheet1::range(char *address)
 {
-	return XLCellRange1(m_doc1, this, m_ws.range(_strupr(address)));
+	return XLCellRange1(m_doc1, this, address);
+}
+
+XLCellRange1 XLWorksheet1::range(char* address1,char *address2)
+{
+	return XLCellRange1(m_doc1, this, address1,address2);
 }
 
 void XLWorksheet1::setSelected(bool sel)
 {
-	m_ws.setSelected(sel);
+	m_ws->setSelected(sel);
 }
 void XLWorksheet1::merge(const std::string &address)
 {
-	m_ws.merges().appendMerge(address);
+	m_ws->merges().appendMerge(address);
 }
 
 int16_t XLWorksheet1::columnCount()
 {
-	return m_ws.columnCount();
+	return m_ws->columnCount();
 }
 int32_t XLWorksheet1::rowCount()
 {
-	return m_ws.rowCount();
+	return m_ws->rowCount();
 }
 
 XLCellReference XLWorksheet1::lastCell()
 {
-	return m_ws.lastCell();
+	return m_ws->lastCell();
 }
 
 void XLWorksheet1::copyRange(XLRECT* from, XLRECT* to)
@@ -1955,89 +2196,177 @@ void XLWorksheet1::copyRange(XLRECT* from, XLRECT* to)
 //		m_ws.row(row_to).setHeight(h);
 
 		for (col_from = from->left, col_to = to->left; col_from <= from->right; col_from++, col_to++) {
-			XLCell c_to = m_ws.cell(row_to, col_to);
+			XLCell c_to = m_ws->cell(row_to, col_to);
 			XLCellReference cr_to = c_to.cellReference();
-			if (hasMerges()) {
-				int32_t mc = m_ws.merges().findMergeByCell(cr_to);
-				if (mc >= 0) {
-					m_ws.merges().deleteMerge(mc);
-				}
+			int32_t mc = m_ws->merges().findMergeByCell(cr_to);
+			if (mc >= 0) {
+				m_ws->merges().deleteMerge(mc);
 			}
 		}
 		for (col_from = from->left, col_to = to->left; col_from <= from->right; col_from++, col_to++) {
-			XLCell c_from = m_ws.cell(row_from, col_from);
-			XLCell c_to = m_ws.cell(row_to, col_to);
+			XLCell c_from = m_ws->cell(row_from, col_from);
+			XLCell c_to = m_ws->cell(row_to, col_to);
 			XLCellReference cr_from = c_from.cellReference();
-			if (hasMerges()) {
-				int32_t mc = m_ws.merges().findMergeByCell(cr_from);
-				if (mc >= 0) {
-					const char* s = m_ws.merges().merge(mc);
-					auto ss = std::string(s);
-					auto pos = ss.find(":");
-					if (pos) {
-						XLCellReference cr_beg = XLCellReference(ss.substr(0, pos));
-						XLCellReference cr_end = XLCellReference(ss.substr(pos + 1));
-						cr_beg.setRow(row_to);
-						cr_end.setRow(row_to);
-						mc = m_ws.merges().findMergeByCell(cr_beg);
-						if (mc >= 0) {
-							m_ws.merges().deleteMerge(mc);
-						}
-						m_ws.merges().appendMerge(cr_beg.address() + ":" + cr_end.address());
+			int32_t mc = m_ws->merges().findMergeByCell(cr_from);
+			if (mc >= 0) {
+				const char* s = m_ws->merges().merge(mc);
+				auto ss = std::string(s);
+				auto pos = ss.find(":");
+				if (pos) {
+					XLCellReference cr_beg = XLCellReference(ss.substr(0, pos));
+					XLCellReference cr_end = XLCellReference(ss.substr(pos + 1));
+					cr_beg.setRow(row_to);
+					cr_end.setRow(row_to);
+					mc = m_ws->merges().findMergeByCell(cr_beg);
+					if (mc >= 0) {
+						m_ws->merges().deleteMerge(mc);
 					}
+					m_ws->merges().appendMerge(cr_beg.address() + ":" + cr_end.address());
 				}
 			}
 			c_to.copyFrom((const XLCell)c_from);
 		}
 	}
 }
-int XLWorksheet1::addPicture(void* buffer, int bufferlen, char* ext, XLRECT* rect)
+XLShape1 XLWorksheet1::addPicture(void* buffer, int bufferlen, XLRECT* rect)
 {
-	return m_doc1->appendPictures(m_index, buffer, bufferlen, ext, rect);
+	XLPICINFO info;
+	picinfo((unsigned char *)buffer, bufferlen,&info);
+	return m_doc1->addPicture(m_index, buffer, bufferlen, rect,&info);
 }
 
-int XLWorksheet1::addPicture(std::string name,XLRECT* rect)
+XLShape1 XLWorksheet1::addLine(XLRECT* rect,XLSIZE *size)
 {
-	struct stat st; int ret = -1; char* ext;
+	return m_doc1->addLine(m_index, rect, size);
+}
+XLShape1 XLWorksheet1::addTextBox(XLRECT* rect, XLSIZE* size)
+{
+	return m_doc1->addTextBox(m_index, rect, size);
+}
+
+XLShape1 XLWorksheet1::addPicture(std::string name,XLRECT* rect)
+{
+	int shnomer; int buflen = 0;
+	XLPICINFO info; unsigned char* buf; XLShape1 sh1{};
 	char* pic = name.data();
-	int pos=name.find_last_of(".");
-	if (pos == std::_Meta_npos)ext = (char *)"png";
-	else ext = pic + pos + 1;
-	stat(pic, &st);
-	int buflen = st.st_size;
-	char *buf = (char*)malloc(buflen);
-	if (buf) {
-		FILE* fi = fopen(pic, (const char*)"rb");
-		fread((void*)buf, buflen, 1, fi);
+	
+	FILE* fi = fopen(pic, (const char*)"rb");
+	
+	if (fi) {
+		fseek(fi, 0, SEEK_END);
+		buflen = ftell(fi);
+		fseek(fi, 0, SEEK_SET);
+		buf = (unsigned char*)malloc(buflen);
+		if (buf) {
+			fread((void*)buf, buflen, 1, fi);
+			picinfo(buf, buflen, &info);
+		}
 		fclose(fi);
-		ret=m_doc1->appendPictures(m_index, buf, buflen, ext, rect);
+	}
+	if(buflen){
+		sh1=m_doc1->addPicture(m_index, buf, buflen, rect,&info);
+		if (info.size.cx && info.size.cy) {
+			char nnn[16]; int x = rect->right - rect->left; int y = rect->bottom - rect->top;
+			if (x>0 && y>0) {
+				info.size.cy = MY_XLSCALE *info.size.cy;
+				info.size.cx = MY_XLSCALE * info.size.cx; info.size.cx = info.size.cx * y /x;
+			}
+			shnomer = this->shapes().count();
+			if (shnomer > 0) {
+				m_doc1->setShapeAttribute(m_index, shnomer, (char*)"xdr:pic/xdr:spPr/a:xfrm/a:ext", (char*)"cx", itoa(info.size.cx, nnn, 10));
+				m_doc1->setShapeAttribute(m_index, shnomer, (char*)"xdr:pic/xdr:spPr/a:xfrm/a:ext", (char*)"cy", itoa(info.size.cy, nnn, 10));
+			}
+		}
 		free(buf);
 	}
-	return ret;
+	return sh1;
+}
+char* XLWorksheet1::shapeAttribute(int shapeNo, char* path)
+{
+	return m_doc1->shapeAttribute(m_index, shapeNo, path);
+}
+void XLWorksheet1::setShapeAttribute(int shapeNo, char* path, char* attribute, char* value)
+{
+	m_doc1->setShapeAttribute(m_index, shapeNo, path, attribute, value);
 }
 
-//-------------------class XLCell1---------------------------------------------------------
+XMLNode XLWorksheet1::shapeXMLNode(int shapeNo, char* path)
+{
+	char* s, * s0; int i; XMLNode f; std::string ss;
 
-XLCell1::XLCell1(XLDocument1 *doc1,XLWorksheet1 * ws1,const XLCell & c)
+	XLDrawing1 dr = doc1()->doc()->sheetDrawing1(m_index);
+	XMLNode n = dr.shapeNode((uint32_t)shapeNo - 1);
+	s = s0 = path;
+	while (1) {
+		if (*s == '/' || !*s) {
+			i = s - s0;
+			if (i)ss = std::string((const char*)s0, (size_t)i);
+			s0 = s + 1;
+			if (i) {
+				f = n.first_child_of_type(pugi::node_element);
+				while (!f.empty()) {
+					if (f.raw_name() == ss)break;
+					f = f.next_sibling_of_type(pugi::node_element);
+				}
+				if (f.empty())break;
+				n = f;
+			}
+			if (!*s)return n;
+		}
+		s++;
+	}
+	return nullptr;
+}
+
+XLPictures1 XLWorksheet1::pictures()
+{
+	return XLPictures1(m_doc1, this, m_ws->drawing1());
+}
+
+XLShapes1 XLWorksheet1::shapes()
+{
+	return XLShapes1(m_doc1, this, m_ws->drawing1());
+}
+
+
+//-------------------class XLCell1---------------------------------------------------------
+XLCell1::XLCell1(XLDocument1* doc1, XLWorksheet1* ws1, const std::string& address)
 {
 	m_doc1 = doc1;
 	m_ws1 = ws1;
-	m_c = c;
+	XLCell c = ws1->ws()->cell(address);
+	m_c = new XLCell(c);
 }
 
-XLWorksheet1* XLCell1::ws1() { return m_ws1; };
-
-void XLCell1::copyFrom(XLCell1 c1)
+XLCell1::XLCell1(XLDocument1* doc1, XLWorksheet1* ws1, char* address)
 {
-	int16_t fromsheetno = c1.ws1()->index();
-	int32_t fromrow = c1.c().cellReference().row();
-	int16_t fromcol = c1.c().cellReference().column();
+	m_doc1 = doc1;
+	m_ws1 = ws1; 
+	XLCell c = ws1->ws()->cell(address);
+	m_c = new XLCell(c);
+
+}
+
+XLCell1::XLCell1(XLDocument1* doc1, XLWorksheet1* ws1, int32_t row, int16_t column)
+{
+	m_doc1 = doc1;
+	m_ws1 = ws1;
+	XLCell c = ws1->ws()->cell(row,column);
+	m_c = new XLCell(c);
+}
+
+void XLCell1::copyFrom(XLCell1 *c1)
+{
+	int16_t fromsheetno = c1->ws1()->index();
+	int32_t fromrow = c1->c()->cellReference().row();
+	int16_t fromcol = c1->c()->cellReference().column();
 	int32_t fromindex = m_doc1->findcharacter(fromsheetno,fromrow,fromcol);
-	m_c.copyFrom(c1.c());
+	XLCell *cc = c1->c();
+	m_c->copyFrom((const XLCell &)cc);
 	if (fromindex >= 0) {
 		int16_t sheetno = m_ws1->index();
-		int32_t row = m_c.cellReference().row();
-		int16_t col = m_c.cellReference().column();
+		int32_t row = m_c->cellReference().row();
+		int16_t col = m_c->cellReference().column();
 		m_doc1->copycharacter(fromindex, sheetno, row, col);
 	}
 }
@@ -2054,7 +2383,7 @@ XLFill1 XLCell1::fill()
 
 XLBorders1 XLCell1::borders()
 {
-	return XLBorders1(m_doc1,this);
+	return XLBorders1(m_doc1,this,0);
 }
 
 XLCharacters1 XLCell1::characters(int16_t start, int16_t len)
@@ -2064,83 +2393,84 @@ XLCharacters1 XLCell1::characters(int16_t start, int16_t len)
 
 XLBorder1 XLCell1::borders(const int32_t index)
 {
-	return XLBorders1(m_doc1, this).item(index);
+	const XLBorders1 &bs = XLBorders1(m_doc1,this,0);
+	return XLBorder1(m_doc1,bs,index);
 }
 
 XLCellValueProxy& XLCell1::value() {
 	m_doc1->setcharacters();
-	return m_c.value();
+	return m_c->value();
 }
 
 int32_t XLCell1::horizontalAlignment()
 {
-	return m_doc1->getintstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_HORIZONTAL);
+	return m_doc1->getintstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_HORIZONTAL);
 }
 
 XLCell1 & XLCell1::setHorizontalAlignment(int32_t value)
 {
-	auto index = m_doc1->setintstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_HORIZONTAL, value);
-	m_c.setCellFormat(index);
+	auto index = m_doc1->setintstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_HORIZONTAL, value);
+	m_c->setCellFormat(index);
 	return *this;
 }
 
 XLCell1 & XLCell1::setHorizontalAlignment(std::string value)
 {
-	auto index = m_doc1->setcharstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_HORIZONTAL, value);
-	m_c.setCellFormat(index);
+	auto index = m_doc1->setcharstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_HORIZONTAL, value);
+	m_c->setCellFormat(index);
 	return *this;
 }
 int32_t XLCell1::verticalAlignment()
 {
-	return m_doc1->getintstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_VERTICAL);
+	return m_doc1->getintstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_VERTICAL);
 }
 
 XLCell1 & XLCell1::setVerticalAlignment(int32_t value)
 {
-	auto index = m_doc1->setintstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_VERTICAL, value);
-	m_c.setCellFormat(index);
+	auto index = m_doc1->setintstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_VERTICAL, value);
+	m_c->setCellFormat(index);
 	return *this;
 }
 
 XLCell1 & XLCell1::setVerticalAlignment(std::string value)
 {
-	auto index = m_doc1->setcharstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_VERTICAL, value);
-	m_c.setCellFormat(index);
+	auto index = m_doc1->setcharstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_VERTICAL, value);
+	m_c->setCellFormat(index);
 	return *this;
 }
 
 bool XLCell1::wraptext()
 {
-	return m_doc1->getboolstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_WRAPTEXT);
+	return m_doc1->getboolstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_WRAPTEXT);
 }
 
 XLCell1 & XLCell1::setWraptext(bool value)
 {
-	auto index = m_doc1->setboolstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_WRAPTEXT, value);
-	m_c.setCellFormat(index);
+	auto index = m_doc1->setboolstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_WRAPTEXT, value);
+	m_c->setCellFormat(index);
 	return *this;
 }
 
 bool XLCell1::shrinktofit()
 {
-	return m_doc1->getboolstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_SHRINKTOFIT);
+	return m_doc1->getboolstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_SHRINKTOFIT);
 }
 
 XLCell1 & XLCell1::setShrinktofit(bool value)
 {
-	auto index = m_doc1->setboolstyle(m_c.cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_SHRINKTOFIT, value);
-	m_c.setCellFormat(index);
+	auto index = m_doc1->setboolstyle(m_c->cellFormat(), MY_XLCELLFORMAT_ALIGNMENT, MY_ALIGN_SHRINKTOFIT, value);
+	m_c->setCellFormat(index);
 	return *this;
 }
 char * XLCell1::numberFormat()
 {
-	return m_doc1->getcharstyle(m_c.cellFormat(), MY_XLCELLFORMAT_NUMBERFORMATID, MY_NUMBERFORMAT_CODE);
+	return m_doc1->getcharstyle(m_c->cellFormat(), MY_XLCELLFORMAT_NUMBERFORMATID, MY_NUMBERFORMAT_CODE);
 }
 
 XLCell1 & XLCell1::setNumberFormat(std::string value)
 {
-	auto index = m_doc1->setcharstyle(m_c.cellFormat(), MY_XLCELLFORMAT_NUMBERFORMATID, MY_NUMBERFORMAT_CODE, value);
-	m_c.setCellFormat(index);
+	auto index = m_doc1->setcharstyle(m_c->cellFormat(), MY_XLCELLFORMAT_NUMBERFORMATID, MY_NUMBERFORMAT_CODE, value);
+	m_c->setCellFormat(index);
 	return *this;
 }
 
@@ -2161,54 +2491,75 @@ XLFont1 XLCharacters1::font()
 
 //------------------class XLCellRange1--------------------------------------------------
 
-XLCellRange1::XLCellRange1(XLDocument1* doc1, XLWorksheet1 * ws1, const XLCellRange & cr)
+XLCellRange1::XLCellRange1(XLDocument1* doc1, XLWorksheet1* ws1)
 {
 	m_doc1 = doc1;
-	m_cr = cr;
 	m_ws1 = ws1;
+	XLCellRange cr = ws1->ws()->range();
+	m_cr = new XLCellRange(cr);
+}
+
+XLCellRange1::XLCellRange1(XLDocument1* doc1, XLWorksheet1* ws1, const std::string& address)
+{
+	m_doc1 = doc1;
+	m_ws1 = ws1;
+	XLCellRange cr = ws1->ws()->range(address);
+	m_cr = new XLCellRange(cr);
+}
+
+XLCellRange1::XLCellRange1(XLDocument1* doc1, XLWorksheet1* ws1, char* address)
+{
+	m_doc1 = doc1;
+	m_ws1 = ws1;
+	XLCellRange cr = ws1->ws()->range(address);
+	m_cr = new XLCellRange(cr);
+}
+XLCellRange1::XLCellRange1(XLDocument1* doc1, XLWorksheet1* ws1, const std::string& address1, const std::string& address2)
+{
+	m_doc1 = doc1;
+	m_ws1 = ws1;
+	XLCellRange cr = ws1->ws()->range(address1,address2);
+	m_cr = new XLCellRange(cr);
+}
+XLCellRange1::XLCellRange1(XLDocument1* doc1, XLWorksheet1* ws1, char* address1, char* address2)
+{
+	m_doc1 = doc1;
+	m_ws1 = ws1;
+	XLCellRange cr = ws1->ws()->range(address1, address2);
+	m_cr = new XLCellRange(cr);
 }
 
 void XLCellRange1::rect(XLRECT *rect)
 {	
-	const XLCellReference tl=m_cr.topLeft();
-	const XLCellReference br = m_cr.bottomRight();
+	const XLCellReference tl=m_cr->topLeft();
+	const XLCellReference br = m_cr->bottomRight();
 	rect->left = tl.column();
 	rect->top = tl.row();
 	rect->right = br.column();
 	rect->bottom = br.row();
 }
-/*
-const XLCellValueProxy& XLCellRange1::value()
-{
-	XLRECT rc;
-	rect(&rc);
-	XLWorksheet1 * s1 = ws1();
-	const XLCell1 & c = s1->cell((int32_t)rc.top, (int16_t)rc.left);
-	return c.value();
-}
-*/
+
 std::string XLCellRange1::address()
 {
-	return m_cr.address();
+	return m_cr->address();
 }
 
-XLBordersR1 XLCellRange1::borders()
+XLBorders1 XLCellRange1::borders()
 {
-	return XLBordersR1(m_doc1, this);
+	return XLBorders1(m_doc1, this,1);
 }
 
 
-XLBorderR1 XLCellRange1::borders(int32_t index)
+XLBorder1 XLCellRange1::borders(int32_t index)
 {
-	return XLBordersR1(m_doc1,this).item(index);
+	const XLBorders1& bs = XLBorders1(m_doc1, this,1);
+	return XLBorder1(m_doc1, bs, index);
 }
 
 XLFont1 XLCellRange1::font()
 {
 	return XLFont1(m_doc1,this);
 }
-
-XLWorksheet1* XLCellRange1::ws1() { return m_ws1; };
 
 XLFill1 XLCellRange1::fill()
 {
@@ -2217,20 +2568,20 @@ XLFill1 XLCellRange1::fill()
 
 void XLCellRange1::merge()
 {
-	m_ws1->merge(m_cr.address());
+	m_ws1->merge(m_cr->address());
 }
 
 void XLCellRange1::copyFrom(std::string address)
 {
 	XLRECT from, to;
-	XLWorksheet ws = m_ws1->ws();
+	XLWorksheet *ws = m_ws1->ws();
 
-	to.right=m_cr.bottomRight().column();
-	to.bottom = m_cr.bottomRight().row();
-	to.left = m_cr.topLeft().column();
-	to.top = m_cr.topLeft().row();
+	to.right=m_cr->bottomRight().column();
+	to.bottom = m_cr->bottomRight().row();
+	to.left = m_cr->topLeft().column();
+	to.top = m_cr->topLeft().row();
 
-	XLCell c=ws.cell(address);
+	XLCell c=ws->cell(address);
 	from.left = c.cellReference().column();
 	from.top= c.cellReference().row();
 	from.right = from.left + to.right - to.left;
@@ -2241,14 +2592,14 @@ void XLCellRange1::copyFrom(std::string address)
 void XLCellRange1::copyTo(std::string address)
 {
 	XLRECT from, to;
-	XLWorksheet ws = m_ws1->ws();
+	XLWorksheet *ws = m_ws1->ws();
 
-	from.right = m_cr.bottomRight().column();
-	from.bottom = m_cr.bottomRight().row();
-	from.left = m_cr.topLeft().column();
-	from.top = m_cr.topLeft().row();
+	from.right = m_cr->bottomRight().column();
+	from.bottom = m_cr->bottomRight().row();
+	from.left = m_cr->topLeft().column();
+	from.top = m_cr->topLeft().row();
 
-	XLCell c = ws.cell(address);
+	XLCell c = ws->cell(address);
 	to.left = c.cellReference().column();
 	to.top = c.cellReference().row();
 	to.right = to.left + from.right - from.left;
@@ -2259,14 +2610,14 @@ void XLCellRange1::copyTo(std::string address)
 void XLCellRange1::insert()
 {
 	XLRECT from, to;
-	from.top = m_cr.topLeft().row();
+	from.top = m_cr->topLeft().row();
 	from.left = 1;
 	to.top = from.top + 1;
 	to.left = 1;
-	XLWorksheet ws = m_ws1->ws();
-	from.bottom = ws.rowCount();
+	XLWorksheet *ws = m_ws1->ws();
+	from.bottom = ws->rowCount();
 	to.bottom = from.bottom + 1;
-	from.right = from.left + ws.columnCount() - 1;
+	from.right = from.left + ws->columnCount() - 1;
 	to.right = from.right;
 
 	m_ws1->copyRange(&from,&to);
@@ -2275,7 +2626,7 @@ void XLCellRange1::insert()
 void XLCellRange1::setpropchar(int32_t type, int32_t prop, std::string value)
 {
 	int32_t index;
-	for (auto it = m_cr.begin(); it != m_cr.end(); ++it) {
+	for (auto it = m_cr->begin(); it != m_cr->end(); ++it) {
 		index = m_doc1->setcharstyle(it->cellFormat(), type, prop, value);
 		it->setCellFormat(index);
 	}
@@ -2284,7 +2635,7 @@ void XLCellRange1::setpropchar(int32_t type, int32_t prop, std::string value)
 void XLCellRange1::setpropdouble(int32_t type, int32_t prop,double value)
 {
 	int32_t index;
-	for (auto it = m_cr.begin(); it != m_cr.end(); ++it) {
+	for (auto it = m_cr->begin(); it != m_cr->end(); ++it) {
 		index = m_doc1->setdoublestyle(it->cellFormat(), type, prop, value);
 		it->setCellFormat(index);
 	}
@@ -2294,7 +2645,7 @@ void XLCellRange1::setpropdouble(int32_t type, int32_t prop,double value)
 void XLCellRange1::setpropint(int32_t type, int32_t prop, int32_t value)
 {
 	int32_t index;
-	for (auto it = m_cr.begin(); it != m_cr.end(); ++it) {
+	for (auto it = m_cr->begin(); it != m_cr->end(); ++it) {
 		index = m_doc1->setintstyle(it->cellFormat(), type, prop, value);
 		it->setCellFormat(index);
 	}
@@ -2303,7 +2654,7 @@ void XLCellRange1::setpropint(int32_t type, int32_t prop, int32_t value)
 void XLCellRange1::setpropbool(int32_t type, int32_t prop, bool value)
 {
 	int32_t index;
-	for (auto it = m_cr.begin(); it != m_cr.end(); ++it) {
+	for (auto it = m_cr->begin(); it != m_cr->end(); ++it) {
 		index = m_doc1->setboolstyle(it->cellFormat(), type, prop, value);
 		it->setCellFormat(index);
 	}
@@ -2345,198 +2696,201 @@ void XLCellRange1::setNumberFormat(std::string value)
 
 //--------------------class XLBorders1--------------------------------------------------------
 
-XLBorders1::XLBorders1(XLDocument1* doc1, XLCell1 * c1)
+XLBorders1::XLBorders1(XLDocument1* doc1, XLCell1 * c1,int32_t t)
 {
 	m_doc1 = doc1;
 	m_c1 = c1;
+	m_t = t;
 }
 
 
-XLBordersR1::XLBordersR1(XLDocument1 *doc1,XLCellRange1 * cr1)
+XLBorders1::XLBorders1(XLDocument1 *doc1,XLCellRange1 * cr1,int32_t t)
 {
 	m_doc1 = doc1;
 	m_cr1 = cr1;
+	m_t = t;
 }
 
 XLBorder1 XLBorders1::item(int32_t index)
 {
-	return XLBorder1(m_doc1,*this,index);
+	return XLBorder1(m_doc1,this,index);
 }
-
-XLBorderR1 XLBordersR1::item(int32_t index)
-{
-	return XLBorderR1(m_doc1, *this, index);
-}
-
 
 //-----------------class XLBorder1--------------------------------------------------
 
-XLBorder1::XLBorder1(XLDocument1 *doc1,const XLBorders1 & bs1,int32_t index)
+XLBorder1::XLBorder1(XLDocument1* doc1, XLBorders1 *bs1, int32_t index)
 {
 	m_doc1 = doc1;
 	m_bs1 = bs1;
 	m_index = index;
+	m_t = bs1->t();
 }
 
-XLBorderR1::XLBorderR1(XLDocument1* doc1, const XLBordersR1 & bs1, int32_t index)
+XLBorder1::XLBorder1(XLDocument1* doc1, const XLBorders1 &bs1, int32_t index)
 {
 	m_doc1 = doc1;
-	m_bs1 = bs1;
+	m_bs1 = new XLBorders1(bs1);
 	m_index = index;
+	m_t = m_bs1->t();
 }
 
 int32_t XLBorder1::lineStyle()
 {
-	XLStyleIndex cf;
-	XLCell c = m_bs1.c1()->c();
-	cf = c.cellFormat();
-	return m_doc1->getintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index);
-}
+	if (m_t == 0) {
+		XLStyleIndex cf;
+		XLCell* c = m_bs1->c1()->c();
+		cf = c->cellFormat();
+		return m_doc1->getintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index);
+	}
+	if (m_t == 1) {
+		XLRECT rect;
+		XLCellRange1* cr1 = m_bs1->cr1();
+		cr1->rect(&rect);
+		XLWorksheet1* s1 = cr1->ws1();
+		XLCell1 c1 = s1->cell((int32_t)rect.top, (int16_t)rect.left);
+		XLBorders1 bs1 = c1.borders();
+		XLBorder1  b1 = bs1.item(0);
+		return b1.lineStyle();
 
-int32_t XLBorderR1::lineStyle()
-{
-	XLRECT rect;
-	XLCellRange1* cr1 = m_bs1.cr1();
-	cr1->rect(&rect);
-	XLWorksheet1* s1 = cr1->ws1();
-	XLCell1 c1 = s1->cell((int32_t)rect.top, (int16_t)rect.left);
-	XLBorders1 bs1 = c1.borders();
-	XLBorder1  b1 = bs1.item(0);
-	return b1.lineStyle();
+	}
+	return 0;
 }
 
 void XLBorder1::setLineStyle(int32_t ls)
 {
-	XLStyleIndex cf;
-	XLCell1 *c1 = m_bs1.c1();
-	XLCell c=c1->c();
-	cf = c.cellFormat();
-	cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
-	c.setCellFormat(cf);
-}
-
-void  XLBorderR1::setLineStyle(int32_t ls)
-{	
-	XLStyleIndex cf;
-	XLRECT rect;
-	XLCellRange1 *cr1 = m_bs1.cr1();
-	XLWorksheet1 *s1=cr1->ws1();
-	cr1->rect(&rect);
-	switch (m_index) {
-	case 0:
-		for (auto i = rect.top; i <= rect.bottom; i++) {
-			XLCell1 c1=s1->cell(i,rect.left);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
-			c.setCellFormat(cf);
+	if (m_t == 0) {
+		XLStyleIndex cf;
+		XLCell1* c1 = m_bs1->c1();
+		XLCell* c = c1->c();
+		cf = c->cellFormat();
+		cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
+		c->setCellFormat(cf);
+		return;
+	}
+	if (m_t == 1) {
+		XLStyleIndex cf;
+		XLRECT rect;
+		XLCellRange1* cr1 = m_bs1->cr1();
+		XLWorksheet1* s1 = cr1->ws1();
+		cr1->rect(&rect);
+		switch (m_index) {
+		case 0:
+			for (auto i = rect.top; i <= rect.bottom; i++) {
+				XLCell1 c1 = s1->cell(i, rect.left);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
+				c->setCellFormat(cf);
+			}
+			break;
+		case 1:
+			for (auto i = rect.top; i <= rect.bottom; i++) {
+				XLCell1 c1 = s1->cell(i, rect.right);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
+				c->setCellFormat(cf);
+			}
+			break;
+		case 2:
+			for (auto i = rect.left; i <= rect.right; i++) {
+				XLCell1 c1 = s1->cell(rect.top, i);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
+				c->setCellFormat(cf);
+			}
+			break;
+		case 3:
+			for (auto i = rect.left; i <= rect.right; i++) {
+				XLCell1 c1 = s1->cell(rect.bottom, i);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
+				c->setCellFormat(cf);
+			}
+			break;
 		}
-		break;
-	case 1:
-		for (auto i = rect.top; i <= rect.bottom; i++) {
-			XLCell1 c1 = s1->cell(i,rect.right);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
-			c.setCellFormat(cf);
-		}
-		break;
-	case 2:
-		for (auto i = rect.left; i <= rect.right; i++) {
-			XLCell1 c1 = s1->cell(rect.top,i);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
-			c.setCellFormat(cf);
-		}
-		break;
-	case 3:
-		for (auto i = rect.left; i <= rect.right; i++) {
-			XLCell1 c1 = s1->cell(rect.bottom, i);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index, ls);
-			c.setCellFormat(cf);
-		}
-		break;
 	}
 }
 
 int32_t XLBorder1::color()
 {
-	XLStyleIndex cf;
-	XLCell1 *c1 = m_bs1.c1();
-	XLCell c=c1->c();
-	cf = c.cellFormat();
-	return m_doc1->getintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index);
-}
-
-int32_t XLBorderR1::color()
-{
-	XLRECT rect;
-	XLCellRange1* cr1 = m_bs1.cr1();
-	cr1->rect(&rect);
-	XLWorksheet1* s1 = cr1->ws1();
-	XLCell1 c1 = s1->cell((int32_t)rect.top, (int16_t)rect.left);
-	XLBorders1 bs1 = c1.borders();
-	XLBorder1  b1 = bs1.item(0);
-	return b1.color();
+	if (m_t == 0) {
+		XLStyleIndex cf;
+		XLCell1* c1 = m_bs1->c1();
+		XLCell* c = c1->c();
+		cf = c->cellFormat();
+		return m_doc1->getintstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index);
+	}
+	if (m_t == 1) {
+		XLRECT rect;
+		XLCellRange1* cr1 = m_bs1->cr1();
+		cr1->rect(&rect);
+		XLWorksheet1* s1 = cr1->ws1();
+		XLCell1 c1 = s1->cell((int32_t)rect.top, (int16_t)rect.left);
+		XLBorders1 bs1 = c1.borders();
+		XLBorder1  b1 = bs1.item(0);
+		return b1.color();
+	}
+	return 0;
 }
 
 void XLBorder1::setColor(std::string color)
 {
-	XLStyleIndex cf;
-	XLCell c = m_bs1.c1()->c();
-	cf = c.cellFormat();
-	cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index+8,color);
-	c.setCellFormat(cf);
-}
-
-void XLBorderR1::setColor(std::string color)
-{
-	XLStyleIndex cf;
-	XLRECT rect;
-	XLCellRange1* cr1 = m_bs1.cr1();
-	XLWorksheet1* s1 = cr1->ws1();
-	int colindex = m_index + 8;
-	cr1->rect(&rect);
-	switch (m_index) {
-	case 0:
-		for (auto i = rect.top; i <= rect.bottom; i++) {
-			XLCell1 c1 = s1->cell(i, rect.left);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
-			c.setCellFormat(cf);
+	if (m_t == 0) {
+		XLStyleIndex cf;
+		XLCell* c = m_bs1->c1()->c();
+		cf = c->cellFormat();
+		cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, m_index + 8, color);
+		c->setCellFormat(cf);
+		return;
+	}
+	if (m_t == 1) {
+		XLStyleIndex cf;
+		XLRECT rect;
+		XLCellRange1* cr1 = m_bs1->cr1();
+		XLWorksheet1* s1 = cr1->ws1();
+		int colindex = m_index + 8;
+		cr1->rect(&rect);
+		switch (m_index) {
+		case 0:
+			for (auto i = rect.top; i <= rect.bottom; i++) {
+				XLCell1 c1 = s1->cell(i, rect.left);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
+				c->setCellFormat(cf);
+			}
+			break;
+		case 1:
+			for (auto i = rect.top; i <= rect.bottom; i++) {
+				XLCell1 c1 = s1->cell(i, rect.right);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
+				c->setCellFormat(cf);
+			}
+			break;
+		case 2:
+			for (auto i = rect.left; i <= rect.right; i++) {
+				XLCell1 c1 = s1->cell(rect.top, i);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
+				c->setCellFormat(cf);
+			}
+			break;
+		case 3:
+			for (auto i = rect.left; i <= rect.right; i++) {
+				XLCell1 c1 = s1->cell(rect.bottom, i);
+				XLCell* c = c1.c();
+				cf = c->cellFormat();
+				cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
+				c->setCellFormat(cf);
+			}
+			break;
 		}
-		break;
-	case 1:
-		for (auto i = rect.top; i <= rect.bottom; i++) {
-			XLCell1 c1 = s1->cell(i, rect.right);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
-			c.setCellFormat(cf);
-		}
-		break;
-	case 2:
-		for (auto i = rect.left; i <= rect.right; i++) {
-			XLCell1 c1 = s1->cell(rect.top, i);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
-			c.setCellFormat(cf);
-		}
-		break;
-	case 3:
-		for (auto i = rect.left; i <= rect.right; i++) {
-			XLCell1 c1 = s1->cell(rect.bottom, i);
-			XLCell c = c1.c();
-			cf = c.cellFormat();
-			cf = m_doc1->setcharstyle(cf, MY_XLCELLFORMAT_BORDERINDEX, colindex, color);
-			c.setCellFormat(cf);
-		}
-		break;
 	}
 }
 
@@ -2559,14 +2913,14 @@ void XLFill1::setpropint(int32_t type, int32_t prop, int32_t value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c = m_c1->c();
-		index = c.cellFormat();
+		XLCell *c = m_c1->c();
+		index = c->cellFormat();
 		index = m_doc1->setintstyle(index, type, prop, value);
-		c.setCellFormat(index);
+		c->setCellFormat(index);
 		return;
 	}
 	if (m_t == 1) {
-		for (auto it = m_cr1->cr().begin(); it != m_cr1->cr().end(); ++it) {
+		for (auto it = m_cr1->cr()->begin(); it != m_cr1->cr()->end(); ++it) {
 			index = it->cellFormat();
 			index = m_doc1->setintstyle(index, type, prop, value);
 			it->setCellFormat(index);
@@ -2580,14 +2934,14 @@ void XLFill1::setpropdouble(int32_t type, int32_t prop, double value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c = m_c1->c();
-		index = c.cellFormat();
+		XLCell *c = m_c1->c();
+		index = c->cellFormat();
 		index = m_doc1->setdoublestyle(index, type, prop, value);
-		c.setCellFormat(index);
+		c->setCellFormat(index);
 		return;
 	}
 	if (m_t == 1) {
-		for (auto it = m_cr1->cr().begin(); it != m_cr1->cr().end(); ++it) {
+		for (auto it = m_cr1->cr()->begin(); it != m_cr1->cr()->end(); ++it) {
 			index = it->cellFormat();
 			index = m_doc1->setdoublestyle(index, type, prop, value);
 			it->setCellFormat(index);
@@ -2601,14 +2955,14 @@ void XLFill1::setpropbool(int32_t type, int32_t prop, bool value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c = m_c1->c();
-		index = c.cellFormat();
+		XLCell *c = m_c1->c();
+		index = c->cellFormat();
 		index = m_doc1->setboolstyle(index, type, prop, value);
-		c.setCellFormat(index);
+		c->setCellFormat(index);
 		return;
 	}
 	if (m_t == 1) {
-		for (auto it = m_cr1->cr().begin(); it != m_cr1->cr().end(); ++it) {
+		for (auto it = m_cr1->cr()->begin(); it != m_cr1->cr()->end(); ++it) {
 			index = it->cellFormat();
 			index = m_doc1->setboolstyle(index, type, prop, value);
 			it->setCellFormat(index);
@@ -2621,25 +2975,23 @@ void XLFill1::setpropchar(int32_t type, int32_t prop, std::string value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c = m_c1->c();
-		index = m_doc1->setcharstyle(c.cellFormat(), type, prop, value);
-		c.setCellFormat(index);
+		XLCell *c = m_c1->c();
+		index = m_doc1->setcharstyle(c->cellFormat(), type, prop, value);
+		c->setCellFormat(index);
 		return;
 	}
 	if (m_t == 1) {
-		for (auto it = m_cr1->cr().begin(); it != m_cr1->cr().end(); ++it) {
+		for (auto it = m_cr1->cr()->begin(); it != m_cr1->cr()->end(); ++it) {
 			index = m_doc1->setcharstyle(it->cellFormat(), type, prop, value);
 			it->setCellFormat(index);
 		}
 	}
 }
 
-
-
 int32_t XLFill1::color()
 {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FILLINDEX, MY_FILL_COLOR);
 }
 void XLFill1::setColor(std::string value)
@@ -2653,8 +3005,8 @@ void XLFill1::setColor(int32_t value)
 
 int32_t XLFill1::backgroundColor()
 {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FILLINDEX, MY_FILL_BACKGROUNDCOLOR);
 }
 
@@ -2669,8 +3021,8 @@ void XLFill1::setBackgroundColor(int32_t value)
 
 int32_t XLFill1::patternType()
 {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FILLINDEX, MY_FILL_PATTERNTYPE);
 }
 
@@ -2702,19 +3054,17 @@ XLFont1::XLFont1(XLDocument1* doc1, XLCharacters1 * ch1)
 	m_ch1 = ch1;
 }
 
-//XLFont1::~XLFont1(){}
-
 void XLFont1::setpropchar(int32_t type,int32_t prop, std::string value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c = m_c1->c();
-		index = m_doc1->setcharstyle(c.cellFormat(), type, prop, value);
-		c.setCellFormat(index);
+		XLCell *c = m_c1->c();
+		index = m_doc1->setcharstyle(c->cellFormat(), type, prop, value);
+		c->setCellFormat(index);
 		return;
 	}
 	if (m_t == 1) {
-		for (auto it = m_cr1->cr().begin(); it != m_cr1->cr().end(); ++it) {
+		for (auto it = m_cr1->cr()->begin(); it != m_cr1->cr()->end(); ++it) {
 			index = m_doc1->setcharstyle(it->cellFormat(), type, prop, value);
 			it->setCellFormat(index);
 		}
@@ -2724,10 +3074,10 @@ void XLFont1::setpropchar(int32_t type,int32_t prop, std::string value)
 		XLCHARACTERSTRUCT pp;
 		XLCell1 *c1 = m_ch1->c1();
 		XLWorksheet1 *ws1 = c1->ws1();
-		XLCell c = c1->c();
+		XLCell *c = c1->c();
 		pp.sheetno = ws1->index();
-		pp.row = c.cellReference().row();
-		pp.col = c.cellReference().column();
+		pp.row = c->cellReference().row();
+		pp.col = c->cellReference().column();
 		pp.start = m_ch1->start();
 		pp.len = m_ch1->len();
 		pp.indexf = 0;
@@ -2745,14 +3095,14 @@ void XLFont1::setpropint(int32_t type, int32_t prop, int32_t value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c = m_c1->c();
-		index = c.cellFormat();
+		XLCell *c = m_c1->c();
+		index = c->cellFormat();
 		index = m_doc1->setintstyle(index, type, prop, value);
-		c.setCellFormat(index);
+		c->setCellFormat(index);
 		return;
 	}
 	if (m_t == 1) {
-		for (auto it = m_cr1->cr().begin(); it != m_cr1->cr().end(); ++it) {
+		for (auto it = m_cr1->cr()->begin(); it != m_cr1->cr()->end(); ++it) {
 			index = it->cellFormat();
 			index = m_doc1->setintstyle(index, type, prop, value);
 			it->setCellFormat(index);
@@ -2764,10 +3114,10 @@ void XLFont1::setpropint(int32_t type, int32_t prop, int32_t value)
 		XLCHARACTERSTRUCT pp;
 		XLCell1 *c1 = m_ch1->c1();
 		XLWorksheet1 *ws1 = c1->ws1();
-		XLCell c = c1->c();
+		XLCell *c = c1->c();
 		pp.sheetno = ws1->index();
-		pp.row = c.cellReference().row();
-		pp.col = c.cellReference().column();
+		pp.row = c->cellReference().row();
+		pp.col = c->cellReference().column();
 		pp.start = m_ch1->start();
 		pp.len = m_ch1->len();
 		pp.indexf = 0;
@@ -2786,14 +3136,14 @@ void XLFont1::setpropbool(int32_t type, int32_t prop, bool value)
 {
 	XLStyleIndex index;
 	if (m_t == 0) {
-		XLCell c = m_c1->c();
-		index = c.cellFormat();
+		XLCell *c = m_c1->c();
+		index = c->cellFormat();
 		index = m_doc1->setboolstyle(index, type, prop, value);
-		c.setCellFormat(index);
+		c->setCellFormat(index);
 		return;
 	}
 	if (m_t == 1) {
-		for (auto it = m_cr1->cr().begin(); it != m_cr1->cr().end(); ++it) {
+		for (auto it = m_cr1->cr()->begin(); it != m_cr1->cr()->end(); ++it) {
 			index = it->cellFormat();
 			index = m_doc1->setboolstyle(index, type, prop, value);
 			it->setCellFormat(index);
@@ -2805,10 +3155,10 @@ void XLFont1::setpropbool(int32_t type, int32_t prop, bool value)
 		XLCHARACTERSTRUCT pp;
 		XLCell1 *c1 = m_ch1->c1();
 		XLWorksheet1 *ws1 = c1->ws1();
-		XLCell c = c1->c();
+		XLCell *c = c1->c();
 		pp.sheetno =ws1->index();
-		pp.row = c.cellReference().row();
-		pp.col = c.cellReference().column();
+		pp.row = c->cellReference().row();
+		pp.col = c->cellReference().column();
 		pp.start = m_ch1->start();
 		pp.len = m_ch1->len();
 		pp.indexf = 0;
@@ -2823,8 +3173,8 @@ void XLFont1::setpropbool(int32_t type, int32_t prop, bool value)
 }
 
 char* XLFont1::name() {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getcharstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_NAME);
 }
 
@@ -2836,8 +3186,8 @@ XLFont1 XLFont1::setName(std::string value)
 
 
 bool XLFont1::bold() {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getboolstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_BOLD);
 }
 
@@ -2849,8 +3199,8 @@ XLFont1 XLFont1::setBold(bool value)
 }
 
 bool XLFont1::italic() {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getboolstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_ITALIC);
 }
 
@@ -2861,8 +3211,8 @@ XLFont1 XLFont1::setItalic(bool value)
 }
 
 bool XLFont1::strikethrough() {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getboolstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_STRIKETHROUGH);
 }
 
@@ -2873,8 +3223,8 @@ XLFont1 XLFont1::setStrikethrough(bool value)
 }
 
 int32_t XLFont1::underline() {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_UNDERLINE);
 }
 
@@ -2891,8 +3241,8 @@ XLFont1 XLFont1::setUnderline(std::string value)
 }
 
 int32_t XLFont1::size() {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_SIZE);
 }
 
@@ -2901,11 +3251,34 @@ XLFont1 XLFont1::setSize(int32_t value)
 	setpropint(MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_SIZE, value);
 	return *this;
 }
+int32_t XLFont1::family() {
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
+	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_FAMILY);
+}
+
+XLFont1 XLFont1::setFamily(int32_t value)
+{
+	setpropint(MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_FAMILY, value);
+	return *this;
+}
+
+int32_t XLFont1::charset() {
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
+	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_CHARSET);
+}
+
+XLFont1 XLFont1::setCharset(int32_t value)
+{
+	setpropint(MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_CHARSET, value);
+	return *this;
+}
 
 bool XLFont1::superscript() {
 	int n;
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	n=m_doc1->getintstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_VERTALIGN);
 	if (n == 2)return true;
 	return false;
@@ -2921,8 +3294,8 @@ XLFont1 XLFont1::setSuperscript(bool value)
 }
 bool XLFont1::subscript() {
 	int n;
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	n = m_doc1->getintstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_VERTALIGN);
 	if (n == 1)return true;
 	return false;
@@ -2938,8 +3311,8 @@ XLFont1 XLFont1::setSubscript(bool value)
 }
 
 int32_t XLFont1::color() {
-	XLCell c = m_c1->c();
-	XLStyleIndex index = c.cellFormat();
+	XLCell *c = m_c1->c();
+	XLStyleIndex index = c->cellFormat();
 	return m_doc1->getintstyle(index, MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_COLOR);
 }
 
@@ -2949,7 +3322,13 @@ XLFont1 XLFont1::setColor(std::string value)
 	return *this;
 }
 
-int utf8next(utf8_int8_t* str) {
+XLFont1 XLFont1::setColor(int32_t value)
+{
+	setpropint(MY_XLCELLFORMAT_FONTINDEX, MY_XLFONT_COLOR, value);
+	return *this;
+}
+
+static int utf8next(utf8_int8_t* str) {
 	utf8_int8_t ch = *str; int n;
 	if (0xf0 == (0xf8 & ch)) {
 		n = 4;
@@ -2966,9 +3345,7 @@ int utf8next(utf8_int8_t* str) {
 	return n;
 }
 
-utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen);
-
-utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen) {
+static utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen) {
 	utf8_int8_t* t = str; utf8_int8_t* st = NULL; int kk;
 	size_t length = 0; size_t n = SIZE_MAX; size_t k;
 	k = 0; //if (!len)len = SIZE_MAX;
@@ -2994,29 +3371,158 @@ utf8_int8_t* utf8substr(utf8_int8_t* str, int start, int len, int* outlen) {
 
 std::string xlrtf(std::string s, int32_t start, int32_t len, std::string rtf)
 {
-int32_t slen; char* ss; int32_t all = 0;
-slen = utf8len((utf8_int8_t*)s.data());
-if (!slen)return "";
-if (!len)len = slen - start + 1;
-if (start >= slen)return "";
-if (start + len > slen+1)len = slen - start;
-if (len < 1)return "";
-ss = (char*)utf8substr((utf8_int8_t*)s.data(), 0, start - 1, &all);
-std::string s1 = std::string(ss,all);
-ss = (char*)utf8substr((utf8_int8_t*)s.data(), start-1,len, &all);
-std::string s2 = std::string(ss, all);
-ss = (char*)utf8substr((utf8_int8_t*)s.data(), start - 1+len, slen-len-start+1, &all);
-std::string s3 = std::string(ss, all);
-std::string out = std::string("");
-if (s1.length()) {
-	out = out + "<r><t>" + s1 + "</t></r>";
+	int32_t slen; char* ss; int32_t all = 0;
+	slen = utf8len((utf8_int8_t*)s.data());
+	if (!slen)return "";
+	if (!len)len = slen - start + 1;
+	if (start >= slen)return "";
+	if (start + len > slen + 1)len = slen - start;
+	if (len < 1)return "";
+	ss = (char*)utf8substr((utf8_int8_t*)s.data(), 0, start - 1, &all);
+	std::string s1 = std::string(ss, all);
+	ss = (char*)utf8substr((utf8_int8_t*)s.data(), start - 1, len, &all);
+	std::string s2 = std::string(ss, all);
+	ss = (char*)utf8substr((utf8_int8_t*)s.data(), start - 1 + len, slen - len - start + 1, &all);
+	std::string s3 = std::string(ss, all);
+	std::string out = std::string("");
+	if (s1.length()) {
+		out = out + "<r><t>" + s1 + "</t></r>";
+	}
+	if (s2.length()) {
+		out = out + "<r><rPr>" + rtf + "</rPr><t>" + s2 + "</t></r>";
+	}
+	if (s3.length()) {
+		out = out + "<r><t>" + s3 + "</t></r>";
+	}
+	return out;
 }
-if (s2.length()) {
-	out = out + "<r><rPr>" + rtf + "</rPr><t>" + s2 + "</t></r>";
+
+//---------------class XLPictures1----------------------------------------------------------
+
+XLPictures1::XLPictures1(XLDocument1 *doc,XLWorksheet1 *ws1,const XLDrawing1 &dr1)
+{
+	m_doc1 = doc;
+	m_ws1 = ws1;
+	m_dr1 = dr1;
 }
-if (s3.length()) {
-	out=out+ "<r><t>"+s3+"</t></r>";
+
+XLPicture1 XLPictures1::item(int32_t index)
+{
+	return XLPicture1(m_doc1,this,index);
 }
-return out;
+
+//----------------class XLPicture1-------------------------------------------------------
+XLPicture1::XLPicture1(XLDocument1* doc1, XLPictures1 *ps1, int32_t index)
+{
+	m_doc1 = doc1;
+	m_ps1 = ps1;
+	m_index = index;
+}
+
+char* XLPicture1::name()
+{
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	return ws1->shapeAttribute(m_index,(char *) "xdr:pic/xdr:nvPicPr/xdr:cNvPr@name");
+}
+
+void XLPicture1::setName(std::string name)
+{
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	ws1->setShapeAttribute(m_index, (char *)"xdr:pic/xdr:nvPicPr/xdr:cNvPr",(char *)"name", name.data());
+}
+
+void XLPicture1::setRotation(int32_t rot)
+{
+	char nnn[32];
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	ws1->setShapeAttribute(m_index, (char*)"xdr:pic/xdr:spPr/a:xfrm", (char*)"rot",itoa(60000*rot,nnn,10) );
+}
+
+int32_t XLPicture1::width()
+{
+	char* nnn;
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	nnn=ws1->shapeAttribute(m_index, (char*)"xdr:ext@cx");
+	int32_t n = atoi(nnn) / MY_XLSCALE;
+	return n;
+}
+int32_t XLPicture1::height()
+{
+	char* nnn;
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	nnn = ws1->shapeAttribute(m_index, (char*)"xdr:/xdr:ext@cy");
+	int32_t n = atoi(nnn) / MY_XLSCALE;
+	return n;
+}
+
+void XLPicture1::setWidth(int32_t width)
+{
+	char nnn[32];
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	ws1->setShapeAttribute(m_index, (char*)"xdr:ext", (char*)"cx", itoa(MY_XLSCALE * width, nnn, 10));
+}
+
+void XLPicture1::setHeight(int32_t height)
+{
+	char nnn[32];
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	ws1->setShapeAttribute(m_index, (char*)"xdr:ext", (char*)"cy", itoa(MY_XLSCALE * height, nnn, 10));
+}
+
+void XLPicture1::fillRect()
+{
+	XLWorksheet1* ws1 = m_ps1->ws1();
+	ws1->setShapeAttribute(m_index, (char*)"xdr:pic/xdr:blipFill/a:stretch/a:fillRect", (char*)"",(char *)"");
+}
+
+//---------------class XLShapes1----------------------------------------------------------
+
+XLShapes1::XLShapes1(XLDocument1* doc, XLWorksheet1* ws1, const XLDrawing1& dr1)
+{
+	m_doc1 = doc;
+	m_ws1 = ws1;
+	m_dr1 = dr1;
+}
+
+XLShape1 XLShapes1::item(int32_t index)
+{
+	return m_dr1.shape(index);
+}
+
+XLShape1 XLShapes1::addPicture(std::string name, int link,int save,float left,float top,float width,float height)
+{
+	XLRECT rect; XLSIZE size;
+	rect.left = (int)left;
+	rect.top = (int)top;
+	rect.right = 0;
+	rect.bottom = 0;
+	size.cx = width;
+	size.cy = height;
+
+	return m_ws1->addPicture(name, &rect);
+}
+
+XLShape1 XLShapes1::addLine(float left, float top, float width, float height)
+{
+	XLRECT rect; XLSIZE size;
+	rect.left = (int)left;
+	rect.top = (int)top;
+	rect.right = (int)width;
+	rect.bottom = (int)height;
+	size.cx = 0;
+	size.cy = 0;
+	return m_ws1->addLine(&rect,&size);
+}
+
+XLShape1 XLShapes1::addTextBox(int orient,float left,float top,float width,float height)
+{
+	XLRECT rect; XLSIZE size;
+	rect.left = (int)left;
+	rect.top = (int)top;
+	rect.right = 0;
+	rect.bottom = 0;
+	size.cx = width;
+	size.cy = height;
+	return m_ws1->addTextBox(&rect, &size);
 }
 

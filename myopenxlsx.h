@@ -6,6 +6,8 @@
 //#define MY_XMLDATA 1
 using namespace OpenXLSX;
 
+#define MY_XLSCALE 9500
+
 #define MY_XLCELLFORMAT_NUMBERFORMATID 0
 #define MY_XLCELLFORMAT_FONTINDEX 1
 #define MY_XLCELLFORMAT_FILLINDEX 2
@@ -82,6 +84,16 @@ typedef struct XLRECT {
 	int32_t right;
 	int32_t bottom;
 } XLRECT;
+
+typedef struct XLSIZE {
+	int32_t cx;
+	int32_t cy;
+}XLSIZE;
+
+typedef struct XLPICINFO {
+	XLSIZE size;
+	char ext[6];
+}XLPICINFO;
 
 typedef struct XLCOLORSTRUCT
 {
@@ -232,8 +244,10 @@ class XLBorders1;
 class XLBorder1;
 class XLBordersR1;
 class XLBorderR1;
-
 class XLFill1;
+class XLPictures1;
+class XLPicture1;
+class XLShapes1;
 
 class XLDocument1
 {
@@ -242,10 +256,6 @@ class XLDocument1
 public:
 	XLDocument1();
 	~XLDocument1();
-#ifdef MY_XMLDATA
-	XLXmlData* getXmlData(const std::string& path, bool doNotThrow=false);
-	const XLXmlData* getXmlData(const std::string& path, bool doNotThrow=false) const;
-#endif
 	void getallstyles();
 	void setallstyles();
 
@@ -290,13 +300,15 @@ public:
 	void close();
 	XLWorkbook1 workbook();
 
-#ifdef MY_DRAWING
+	int insertToImage(int sheetXmlNo, void* buffer, int bufferlen, char* ext, XLRelationshipItem *embed);
 	char* shapeAttribute(int sheetXmlNo, int shapeNo, char* path);
 	void setShapeAttribute(int sheetXmlNo, int shapeNo, char* path, char* attribute, char* value);
-	int appendPictures(int sheetXmlNo, void* buffer, int bufferlen, char* ext, XLRECT* rect);
+	XMLNode shapeXMLNode(int sheetXmlNo, int shapeNo, char* path);
+	XLShape1 addPicture(int sheetXmlNo, void* buffer, int bufferlen, XLRECT* rect,XLPICINFO *info);
 	bool hasSheetDrawing(uint16_t sheetXmlNo) const;
 	XLDrawing1& sheetDrawing(uint16_t sheetXmlNo);
-#endif
+	XLShape1 addLine(int sheetXmlNo, XLRECT* rect,XLSIZE *size);
+	XLShape1 addTextBox(int sheetXmlNo, XLRECT* rect, XLSIZE* size);
 
 private:
 	XLDocument *m_doc;
@@ -323,23 +335,22 @@ private:
 	int m_charactercount = 0;
 };
 
-class XLWorkbook1 //: public XLWorkbook
+class XLWorkbook1
 {
-//friend XLDocument1;
 public :
-	XLWorkbook1(XLDocument1 * doc1,const XLWorkbook &wb);
-	~XLWorkbook1()=default;
-	XLDocument1 *doc1() { return m_doc1; };
-	XLWorksheet1 worksheet(uint16_t n);
-	XLWorksheet1 worksheet(const std::string & name);
-	XLWorksheet1 worksheet(const char *name);
+	XLWorkbook1(XLDocument1* doc1);
+	~XLWorkbook1() { delete m_wb; };
+	XLDocument1 * doc1() { return m_doc1; };
+	XLWorkbook *wb() { return m_wb; };
 	void addWorksheet(const std::string& name);
 	void cloneSheet(const std::string& name,const std::string &newname);
 	void deleteSheet(const std::string& name);
+	XLWorksheet1 worksheet(uint16_t index);
+	XLWorksheet1 worksheet(const std::string& name);
 	unsigned int worksheetCount();
 private :
 	XLDocument1 *m_doc1;
-	XLWorkbook m_wb;
+	XLWorkbook *m_wb;
 };
 
 class XLWorksheet1 : public XLXmlFile
@@ -347,30 +358,48 @@ class XLWorksheet1 : public XLXmlFile
 friend XLDocument1;
 public:
 	XLWorksheet1()=default;
-	XLWorksheet1(XLDocument1 * doc1, const XLWorksheet & ws);
-	~XLWorksheet1()=default;
-	const XLWorksheet & ws() { return m_ws; };
+	XLWorksheet1(XLDocument1* doc1, XLWorkbook1* wb1, XLWorksheet *ws);
+	XLWorksheet1(XLDocument1* doc1, XLWorkbook1* wb1, uint16_t index);
+	XLWorksheet1(XLDocument1* doc1, XLWorkbook1* wb1, const std::string & name);
+	~XLWorksheet1() { delete m_ws; };
+	XLDocument1* doc1() { return m_doc1; };
+	XLWorksheet * ws() { return m_ws; };
+	XLColumn column(int16_t ncol) { return m_ws->column(ncol); };
+	XLRow row(int32_t nrow) { return m_ws->row(nrow); };
 	XLCell1 cell(const std::string &address);
 	XLCell1 cell(char *address);
 	XLCell1 cell(int32_t row, int16_t column);
 	XLCellRange1 range();
 	XLCellRange1 range(const std::string &address);
 	XLCellRange1 range(char * address);
+	XLCellRange1 range(const std::string& address1, const std::string& address2);
+	XLCellRange1 range(char* address1,char *address2);
 	void merge(const std::string &address);
 	void setSelected(bool sel);
 	int16_t columnCount();
 	int32_t rowCount();
 	XLCellReference lastCell();
 	int16_t index() { return m_index; };
-	bool hasMerges() { return m_ws.m_merges.count()>0; };
+	void mergeCells(std::string s,bool flag) { m_ws->mergeCells(s,flag); };
+	void mergeCells(XLCellRange r, bool flag) { m_ws->mergeCells(r, flag); };
+	void unmergeCells(std::string s) { m_ws->unmergeCells(s); };
+	void unmergeCells(XLCellRange r) { m_ws->unmergeCells(r); };
 	void copyRange(XLRECT *from,XLRECT *to);
-	int addPicture(void* buffer, int bufferlen, char* ext, XLRECT* rect);
-	int addPicture(std::string name, XLRECT* rect);
+	XLShape1 addPicture(void* buffer, int bufferlen, XLRECT* rect);
+	XLShape1 addPicture(std::string name,XLRECT* rect);
+	XLShape1 addLine(XLRECT* rect, XLSIZE* size);
+	XLShape1 addTextBox(XLRECT* rect, XLSIZE* size);
+	XMLNode shapeXMLNode(int shapeNo, char* path);
+	XLShapes1 shapes();
 
+	char* shapeAttribute(int shapeNo, char* path);
+	void setShapeAttribute(int shapeNo, char* path, char* attribute, char* value);
+	XLPictures1 pictures();
 
 private:
 	XLDocument1 *m_doc1;
-	XLWorksheet m_ws;
+	XLWorkbook1 *m_wb1;
+	XLWorksheet *m_ws;
 	int16_t m_index;
 };
 
@@ -379,21 +408,24 @@ class XLCell1 : public XLCell
 friend XLDocument1;
 public :
 	XLCell1()=default;
-	XLCell1(XLDocument1* doc1, XLWorksheet1 * ws1, const XLCell & c);
-	~XLCell1()=default;
+	XLCell1(XLDocument1*doc1,XLWorksheet1 *ws1,const std::string& address);
+	XLCell1(XLDocument1* doc1, XLWorksheet1* ws1, char* address);
+	XLCell1(XLDocument1* doc1, XLWorksheet1* ws1,int32_t row, int16_t column);
+//	~XLCell1() { delete m_c; };
+	~XLCell1() = default;
 	XLCell1& operator=(const XLCell1&) = default;
 	XLCell1& operator=(XLCell1&& other) noexcept = default;
+	XLDocument1* doc1() { return m_doc1; };
+	XLWorksheet1* ws1() { return m_ws1; };
+	XLCell* c() { return m_c; };
 	XLCellValueProxy& value();
-	void copyFrom(XLCell1 c1);
+	void copyFrom(XLCell1 *c1);
 	XLFont1 font();
 	XLFill1 fill();
 	XLBorders1 borders();
 	XLBorder1 borders(int32_t index);
 
 	XLCharacters1 characters(int16_t start, int16_t len);
-	XLDocument1* doc1() { return m_doc1; };
-	XLWorksheet1* ws1();// { return m_ws1; };
-	XLCell & c() { return m_c; };
 	int32_t horizontalAlignment();
 	XLCell1 & setHorizontalAlignment(int32_t value);
 	XLCell1 & setHorizontalAlignment(std::string value);
@@ -411,7 +443,7 @@ public :
 private: 
 	XLDocument1* m_doc1;
 	XLWorksheet1 *m_ws1;
-	XLCell m_c;
+	XLCell *m_c;
 };
 
 class XLCellRange1 : public XLCellRange
@@ -419,21 +451,25 @@ class XLCellRange1 : public XLCellRange
 friend XLDocument1;
 public:
 	XLCellRange1()=default;
-	XLCellRange1(XLDocument1* doc1, XLWorksheet1 * ws1, const XLCellRange & cr);
+	XLCellRange1(XLDocument1 *doc1, XLWorksheet1 *ws1);
+	XLCellRange1(XLDocument1 *doc1, XLWorksheet1 *ws1,const std::string& address);
+	XLCellRange1(XLDocument1 *doc1, XLWorksheet1 *ws1,char* address);
+	XLCellRange1(XLDocument1 *doc1, XLWorksheet1 *ws1,const std::string& address1, const std::string& address2);
+	XLCellRange1(XLDocument1 *doc1, XLWorksheet1 *ws1,char* address1, char* address2);
+
 	~XLCellRange1()=default;
 	XLCellRange1& operator=(const XLCellRange1&) = default;
 	XLCellRange1& operator=(XLCellRange1&& other) noexcept = default;
 	XLDocument1* doc1() { return m_doc1; };
-	XLWorksheet1* ws1();// { return m_ws1; };
-	XLCellRange & cr() { return m_cr; };
+	XLWorksheet1* ws1(){ return m_ws1; };
+	XLCellRange *cr() { return m_cr; };
 	void rect(XLRECT *rect);
-//	const XLCellValueProxy& value();
 	XLFont1 font();
 	XLFill1 fill();
 	void merge();
 	std::string address();
-	XLBordersR1 borders();
-	XLBorderR1 borders(int32_t index);
+	XLBorders1 borders();
+	XLBorder1 borders(int32_t index);
 	void copyFrom(std::string address);
 	void copyTo(std::string address);
 	void insert();
@@ -449,9 +485,9 @@ public:
 	void setShrinktofit(bool value);
 	void setNumberFormat(std::string value);
 private:
-	XLDocument1* m_doc1;
-	XLWorksheet1* m_ws1;
-	XLCellRange  m_cr;
+	XLDocument1 *m_doc1;
+	XLWorksheet1 *m_ws1;
+	XLCellRange  *m_cr;
 };
 
 class XLCharacters1
@@ -478,58 +514,38 @@ class XLBorders1
 {
 public:
 	XLBorders1() {};
-	XLBorders1(XLDocument1 *doc1,XLCell1 * c1);
+	XLBorders1(XLDocument1 *doc1,XLCell1 * c1,int32_t t);
+	XLBorders1(XLDocument1* doc1, XLCellRange1* cr1,int32_t t);
 	~XLBorders1()=default;
 	XLDocument1* doc1() { return m_doc1; };
 	XLCell1 * c1() { return m_c1; };
+	XLCellRange1* cr1() { return m_cr1; };
+	int32_t t() { return m_t; };
+
 	XLBorder1 item(int32_t n);
 private:
 	XLDocument1* m_doc1;
 	XLCell1 *m_c1;
-};
-
-class XLBordersR1
-{
-public:
-	XLBordersR1() = default;
-	XLBordersR1(XLDocument1* doc1, XLCellRange1* cr1);
-	~XLBordersR1() = default;
-	XLDocument1* doc1() { return m_doc1; };
-	XLCellRange1* cr1() { return m_cr1; };
-	XLBorderR1 item(int32_t n);
-private:
-	XLDocument1* m_doc1;
 	XLCellRange1* m_cr1;
+	int32_t m_t;
 };
 
 class XLBorder1
 {
 public:
-	XLBorder1(XLDocument1 *doc1,const XLBorders1 & bs,int32_t index);
+	XLBorder1(XLDocument1* doc1, XLBorders1 *bs1, int32_t index);
+	XLBorder1(XLDocument1* doc1, const XLBorders1 &bs1, int32_t index);
 	~XLBorder1()=default;
+	int32_t index() { return m_index; };
 	void  setLineStyle(int32_t ls);
 	void  setColor(std::string color);
 	int32_t lineStyle();
 	int32_t color();
 private:
 	XLDocument1* m_doc1;
-	XLBorders1 m_bs1;
+	XLBorders1 *m_bs1;
 	int32_t m_index;
-};
-
-class XLBorderR1
-{
-public:
-	XLBorderR1(XLDocument1* doc1, const XLBordersR1 & bs, int32_t index);
-	~XLBorderR1() = default;
-	void setLineStyle(int32_t ls);
-	void setColor(std::string color);
-	int32_t lineStyle();
-	int32_t color();
-private:
-	XLDocument1* m_doc1;
-	XLBordersR1 m_bs1;
-	int32_t m_index;
+	int32_t m_t;
 };
 
 class XLFill1
@@ -584,6 +600,10 @@ public:
 	XLFont1 setName(std::string value);
 	int32_t size();
 	XLFont1 setSize(int32_t value);
+	int32_t family();
+	XLFont1 setFamily(int32_t value);
+	int32_t charset();
+	XLFont1 setCharset(int32_t value);
 	bool bold();
 	XLFont1 setBold() { return setBold(true); };
 	XLFont1 setBold(bool value);
@@ -605,6 +625,8 @@ public:
 	XLFont1 setSubscript(bool value);
 	int32_t color();
 	XLFont1 setColor(std::string value);
+	XLFont1 setColor(int32_t value);
+
 private :
 	XLDocument1* m_doc1;
 	int32_t m_t = 0;
@@ -613,17 +635,251 @@ private :
 	XLCharacters1  *m_ch1;
 };
 
+class XLPictures1
+{
+public :
+	XLPictures1(XLDocument1 *doc1,XLWorksheet1 *ws1,const XLDrawing1 &dr1);
+	~XLPictures1() = default;
+	int32_t count() { return m_dr1.shapeCount(); };
+	XLDocument1* doc1() { return m_doc1; };
+	XLWorksheet1 *ws1() { return m_ws1; };
+//	XLDrawing1* dr1() { return m_dr1; };
+	XLPicture1 item(int32_t index);
+private:
+	XLDocument1 *m_doc1;
+	XLWorksheet1 *m_ws1;
+	XLDrawing1 m_dr1;
+};
 
-/* Demo RTF - included
-<r>
-	<t>pri</t>
-</r>
-<r>
-	<rPr>
-		<u/>
-		<i/>
-		<b/>
-	</rPr>
-	<t>vet</t>
-</r>
+class XLPicture1
+{
+public :
+	XLPicture1(XLDocument1 *doc1,XLPictures1 *p,int32_t index);
+	~XLPicture1() = default;
+	XLDocument1* doc1() { return m_doc1; };
+	XLPictures1* ps1() { return m_ps1; };
+	int32_t index() { return m_index; };
+	char* name();
+	void setName(std::string name);
+	void setRotation(int32_t rot);
+	int32_t width();
+	int32_t height();
+	void setWidth(int32_t width);
+	void setHeight(int32_t height);
+	void fillRect();
+
+private :
+	XLDocument1* m_doc1;
+	XLPictures1* m_ps1;
+	int32_t m_index;
+};
+
+class XLShapes1
+{
+public:
+	XLShapes1(XLDocument1* doc1, XLWorksheet1* ws1, const XLDrawing1& dr1);
+	~XLShapes1() = default;
+	int32_t count() { return m_dr1.shapeCount(); };
+	XLDocument1* doc1() { return m_doc1; };
+	XLWorksheet1* ws1() { return m_ws1; };
+	XLShape1 item(int32_t index);
+	XLShape1 addPicture(std::string name, int link,int save,float left, float top, float width, float height);
+	XLShape1 addLine(float left, float top, float width, float height);
+	XLShape1 addTextBox(int orient,float left,float top,float width,float height);
+	XLShape1 addShape(int32_t type, float left, float top, float width, float height);
+
+private:
+	XLDocument1* m_doc1;
+	XLWorksheet1* m_ws1;
+	XLDrawing1 m_dr1;
+};
+
+/*
+<enumeration value = "line" / >
+<enumeration value = "lineInv" / >
+<enumeration value = "triangle" / >
+<enumeration value = "rtTriangle" / >
+<enumeration value = "rect" / >
+<enumeration value = "diamond" / >
+<enumeration value = "parallelogram" / >
+<enumeration value = "trapezoid" / >
+<enumeration value = "nonIsoscelesTrapezoid" / >
+<enumeration value = "pentagon" / >
+<enumeration value = "hexagon" / >
+<enumeration value = "heptagon" / >
+<enumeration value = "octagon" / >
+<enumeration value = "decagon" / >
+<enumeration value = "dodecagon" / >
+<enumeration value = "star4" / >
+<enumeration value = "star5" / >
+<enumeration value = "star6" / >
+<enumeration value = "star7" / >
+<enumeration value = "star8" / >
+<enumeration value = "star10" / >
+<enumeration value = "star12" / >
+<enumeration value = "star16" / >
+<enumeration value = "star24" / >
+<enumeration value = "star32" / >
+<enumeration value = "roundRect" / >
+<enumeration value = "round1Rect" / >
+<enumeration value = "round2SameRect" / >
+<enumeration value = "round2DiagRect" / >
+<enumeration value = "snipRoundRect" / >
+<enumeration value = "snip1Rect" / >
+<enumeration value = "snip2SameRect" / >
+<enumeration value = "snip2DiagRect" / >
+<enumeration value = "plaque" / >
+<enumeration value = "ellipse" / >
+<enumeration value = "teardrop" / >
+<enumeration value = "homePlate" / >
+<enumeration value = "chevron" / >
+<enumeration value = "pieWedge" / >
+<enumeration value = "pie" / >
+<enumeration value = "blockArc" / >
+<enumeration value = "donut" / >
+<enumeration value = "noSmoking" / >
+<enumeration value = "rightArrow" / >
+<enumeration value = "leftArrow" / >
+<enumeration value = "upArrow" / >
+<enumeration value = "downArrow" / >
+<enumeration value = "stripedRightArrow" / >
+<enumeration value = "notchedRightArrow" / >
+<enumeration value = "bentUpArrow" / >
+<enumeration value = "leftRightArrow" / >
+<enumeration value = "upDownArrow" / >
+<enumeration value = "leftUpArrow" / >
+<enumeration value = "leftRightUpArrow" / >
+<enumeration value = "quadArrow" / >
+<enumeration value = "leftArrowCallout" / >
+<enumeration value = "rightArrowCallout" / >
+<enumeration value = "upArrowCallout" / >
+<enumeration value = "downArrowCallout" / >
+<enumeration value = "leftRightArrowCallout" / >
+<enumeration value = "upDownArrowCallout" / >
+<enumeration value = "quadArrowCallout" / >
+<enumeration value = "bentArrow" / >
+<enumeration value = "uturnArrow" / >
+<enumeration value = "circularArrow" / >
+<enumeration value = "leftCircularArrow" / >
+<enumeration value = "leftRightCircularArrow" / >
+<enumeration value = "curvedRightArrow" / >
+<enumeration value = "curvedLeftArrow" / >
+<enumeration value = "curvedUpArrow" / >
+<enumeration value = "curvedDownArrow" / >
+<enumeration value = "swooshArrow" / >
+<enumeration value = "cube" / >
+<enumeration value = "can" / >
+<enumeration value = "lightningBolt" / >
+<enumeration value = "heart" / >
+<enumeration value = "sun" / >
+<enumeration value = "moon" / >
+<enumeration value = "smileyFace" / >
+<enumeration value = "irregularSeal1" / >
+<enumeration value = "irregularSeal2" / >
+<enumeration value = "foldedCorner" / >
+<enumeration value = "bevel" / >
+<enumeration value = "frame" / >
+<enumeration value = "halfFrame" / >
+<enumeration value = "corner" / >
+<enumeration value = "diagStripe" / >
+<enumeration value = "chord" / >
+<enumeration value = "arc" / >
+<enumeration value = "leftBracket" / >
+<enumeration value = "rightBracket" / >
+<enumeration value = "leftBrace" / >
+<enumeration value = "rightBrace" / >
+<enumeration value = "bracketPair" / >
+<enumeration value = "bracePair" / >
+<enumeration value = "straightConnector1" / >
+<enumeration value = "bentConnector2" / >
+<enumeration value = "bentConnector3" / >
+<enumeration value = "bentConnector4" / >
+<enumeration value = "bentConnector5" / >
+<enumeration value = "curvedConnector2" / >
+<enumeration value = "curvedConnector3" / >
+<enumeration value = "curvedConnector4" / >
+<enumeration value = "curvedConnector5" / >
+<enumeration value = "callout1" / >
+<enumeration value = "callout2" / >
+<enumeration value = "callout3" / >
+<enumeration value = "accentCallout1" / >
+<enumeration value = "accentCallout2" / >
+<enumeration value = "accentCallout3" / >
+<enumeration value = "borderCallout1" / >
+<enumeration value = "borderCallout2" / >
+<enumeration value = "borderCallout3" / >
+<enumeration value = "accentBorderCallout1" / >
+<enumeration value = "accentBorderCallout2" / >
+<enumeration value = "accentBorderCallout3" / >
+<enumeration value = "wedgeRectCallout" / >
+<enumeration value = "wedgeRoundRectCallout" / >
+<enumeration value = "wedgeEllipseCallout" / >
+<enumeration value = "cloudCallout" / >
+<enumeration value = "cloud" / >
+<enumeration value = "ribbon" / >
+<enumeration value = "ribbon2" / >
+<enumeration value = "ellipseRibbon" / >
+<enumeration value = "ellipseRibbon2" / >
+<enumeration value = "leftRightRibbon" / >
+<enumeration value = "verticalScroll" / >
+<enumeration value = "horizontalScroll" / >
+<enumeration value = "wave" / >
+<enumeration value = "doubleWave" / >
+<enumeration value = "plus" / >
+<enumeration value = "flowChartProcess" / >
+<enumeration value = "flowChartDecision" / >
+<enumeration value = "flowChartInputOutput" / >
+<enumeration value = "flowChartPredefinedProcess" / >
+<enumeration value = "flowChartInternalStorage" / >
+<enumeration value = "flowChartDocument" / >
+<enumeration value = "flowChartMultidocument" / >
+<enumeration value = "flowChartTerminator" / >
+<enumeration value = "flowChartPreparation" / >
+<enumeration value = "flowChartManualInput" / >
+<enumeration value = "flowChartManualOperation" / >
+<enumeration value = "flowChartConnector" / >
+<enumeration value = "flowChartPunchedCard" / >
+<enumeration value = "flowChartPunchedTape" / >
+<enumeration value = "flowChartSummingJunction" / >
+<enumeration value = "flowChartOr" / >
+<enumeration value = "flowChartCollate" / >
+<enumeration value = "flowChartSort" / >
+<enumeration value = "flowChartExtract" / >
+<enumeration value = "flowChartMerge" / >
+<enumeration value = "flowChartOfflineStorage" / >
+<enumeration value = "flowChartOnlineStorage" / >
+<enumeration value = "flowChartMagneticTape" / >
+<enumeration value = "flowChartMagneticDisk" / >
+<enumeration value = "flowChartMagneticDrum" / >
+<enumeration value = "flowChartDisplay" / >
+<enumeration value = "flowChartDelay" / >
+<enumeration value = "flowChartAlternateProcess" / >
+<enumeration value = "flowChartOffpageConnector" / >
+<enumeration value = "actionButtonBlank" / >
+<enumeration value = "actionButtonHome" / >
+<enumeration value = "actionButtonHelp" / >
+<enumeration value = "actionButtonInformation" / >
+<enumeration value = "actionButtonForwardNext" / >
+<enumeration value = "actionButtonBackPrevious" / >
+<enumeration value = "actionButtonEnd" / >
+<enumeration value = "actionButtonBeginning" / >
+<enumeration value = "actionButtonReturn" / >
+<enumeration value = "actionButtonDocument" / >
+<enumeration value = "actionButtonSound" / >
+<enumeration value = "actionButtonMovie" / >
+<enumeration value = "gear6" / >
+<enumeration value = "gear9" / >
+<enumeration value = "funnel" / >
+<enumeration value = "mathPlus" / >
+<enumeration value = "mathMinus" / >
+<enumeration value = "mathMultiply" / >
+<enumeration value = "mathDivide" / >
+<enumeration value = "mathEqual" / >
+<enumeration value = "mathNotEqual" / >
+<enumeration value = "cornerTabs" / >
+<enumeration value = "squareTabs" / >
+<enumeration value = "plaqueTabs" / >
+<enumeration value = "chartX" / >
+<enumeration value = "chartStar" / >
+<enumeration value = "chartPlus" / >
 */
